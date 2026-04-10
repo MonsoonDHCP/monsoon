@@ -1,0 +1,89 @@
+﻿server:
+  hostname: monsoon-01
+  data_dir: ./data
+  log_level: info
+  log_format: json
+
+dhcp:
+  v4:
+    enabled: true
+    listen: 0.0.0.0:67
+    authoritative: true
+  v6:
+    enabled: false
+    listen: "[::]:547"
+  default_lease_time: 12h
+  max_lease_time: 24h
+
+subnets:
+  - cidr: 10.0.1.0/24
+    name: Server VLAN
+    vlan: 10
+    gateway: 10.0.1.1
+    dns: [10.0.1.2, 8.8.8.8]
+    dhcp:
+      enabled: true
+      pool_start: 10.0.1.50
+      pool_end: 10.0.1.200
+      lease_time: 8h
+
+ipam:
+  discovery:
+    enabled: true
+    default_interval: 1h
+    methods: [arp, ping]
+    conflict_detection: true
+    rogue_dhcp_detection: true
+    quarantine_period: 15m
+    abandoned_threshold: 168h
+
+api:
+  rest:
+    enabled: true
+    listen: :8067
+    cors_origins: ["*"]
+    rate_limit: 100
+  grpc:
+    enabled: true
+    listen: :9067
+  websocket:
+    enabled: true
+  mcp:
+    enabled: true
+    listen: :7067
+
+dashboard:
+  enabled: true
+  base_path: /
+
+auth:
+  enabled: true
+  type: local
+  local:
+    admin_username: admin
+    admin_password_hash: ""
+  api_tokens:
+    enabled: true
+  session:
+    duration: 24h
+    cookie_name: monsoon_session
+    secure: false
+
+ha:
+  enabled: false
+  mode: active-passive
+  heartbeat_interval: 1s
+  failover_timeout: 10s
+  lease_sync: true
+
+metrics:
+  prometheus:
+    enabled: true
+    path: /metrics
+
+backup:
+  auto:
+    enabled: true
+    interval: 6h
+    retention: 7
+    path: ./data/backups

@@ -5,6 +5,7 @@ import type {
   AddressRecord,
   ApiEnvelope,
   DiscoveryConflict,
+  DiscoveryProgress,
   DiscoveryResult,
   RogueServer,
   DiscoveryScanResponse,
@@ -103,6 +104,10 @@ export function fetchDiscoveryConflicts() {
 
 export function fetchDiscoveryRogueServers() {
   return request<RogueServer[]>("/api/v1/discovery/rogue")
+}
+
+export function fetchDiscoveryProgress() {
+  return request<DiscoveryProgress>("/api/v1/discovery/progress")
 }
 
 export function fetchReservations() {

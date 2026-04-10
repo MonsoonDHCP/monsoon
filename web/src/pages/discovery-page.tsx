@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export function DiscoveryPage() {
-  const { discovery, discoveryResults, discoveryConflicts, rogueServers, triggerScan } = useDashboard()
+  const { discovery, discoveryProgress, discoveryResults, discoveryConflicts, rogueServers, triggerScan } = useDashboard()
 
   return (
     <div className="space-y-6">
@@ -28,6 +28,17 @@ export function DiscoveryPage() {
             <Button onClick={() => void triggerScan()} disabled={discovery?.scanning}>
               {discovery?.scanning ? "Scanning..." : "Trigger scan"}
             </Button>
+            <div className="mt-3">
+              <div className="h-2 rounded-full bg-muted">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-teal-400 transition-all"
+                  style={{ width: `${Math.max(0, Math.min(100, discoveryProgress?.percent ?? 0))}%` }}
+                />
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">
+                Phase: {discoveryProgress?.phase ?? "idle"} | {discoveryProgress?.processed ?? 0}/{discoveryProgress?.total ?? 0}
+              </p>
+            </div>
           </CardContent>
         </Card>
 

@@ -10,6 +10,7 @@ type Status struct {
 	NextScheduledScan time.Time `json:"next_scheduled_scan,omitempty"`
 	Scanning          bool      `json:"scanning"`
 	LatestScanID      string    `json:"latest_scan_id,omitempty"`
+	Progress          Progress  `json:"progress"`
 }
 
 type ScanRequest struct {
@@ -56,4 +57,15 @@ type ObservedHost struct {
 	Subnet   string    `json:"subnet,omitempty"`
 	State    string    `json:"state"`
 	SeenAt   time.Time `json:"seen_at"`
+}
+
+type Progress struct {
+	ScanID     string    `json:"scan_id,omitempty"`
+	Phase      string    `json:"phase"`
+	Total      int       `json:"total"`
+	Processed  int       `json:"processed"`
+	Percent    int       `json:"percent"`
+	StartedAt  time.Time `json:"started_at,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at,omitempty"`
+	InProgress bool      `json:"in_progress"`
 }

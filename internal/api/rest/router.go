@@ -485,6 +485,10 @@ func registerDiscoveryRoutes(mux *http.ServeMux, engine *discovery.Engine, broke
 		WriteJSON(w, http.StatusOK, engine.Status(r.Context()), nil)
 	})
 
+	mux.HandleFunc("GET /api/v1/discovery/progress", func(w http.ResponseWriter, r *http.Request) {
+		WriteJSON(w, http.StatusOK, engine.Progress(r.Context()), nil)
+	})
+
 	mux.HandleFunc("POST /api/v1/discovery/scan", func(w http.ResponseWriter, r *http.Request) {
 		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
 			return

@@ -248,6 +248,22 @@ func run() int {
 	reg := metrics.NewRegistry()
 	reg.SetGauge("monsoon_build_info", map[string]string{"version": version}, 1)
 	eventBroker := events.NewBroker(64)
+	discoveryEngine.SetOnComplete(func(result discovery.ScanResult) {
+		eventBroker.Publish(events.Event{
+			Type: "discovery.scan_completed",
+			Data: map[string]any{
+				"scan_id":       result.ScanID,
+				"total_hosts":   result.TotalHosts,
+				"new_hosts":     result.NewHosts,
+				"changed_hosts": result.ChangedHosts,
+				"missing_hosts": result.MissingHosts,
+				"conflicts":     len(result.Conflicts),
+				"rogue_servers": len(result.RogueServers),
+				"duration_ms":   result.DurationMS,
+				"completed_at":  result.CompletedAt,
+			},
+		})
+	})
 
 	metricsPath := cfg.Metrics.Prometheus.Path
 	if metricsPath == "" {

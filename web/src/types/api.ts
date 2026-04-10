@@ -65,6 +65,7 @@ export type DiscoveryStatus = {
   next_scheduled_scan: string
   scanning?: boolean
   latest_scan_id?: string
+  progress?: DiscoveryProgress
 }
 
 export type DiscoveryScanResponse = {
@@ -112,6 +113,17 @@ export type DiscoveryResult = {
   conflicts: DiscoveryConflict[]
   rogue_servers: RogueServer[]
   hosts?: DiscoveryHost[]
+}
+
+export type DiscoveryProgress = {
+  scan_id?: string
+  phase: string
+  total: number
+  processed: number
+  percent: number
+  started_at?: string
+  updated_at?: string
+  in_progress: boolean
 }
 
 export type Reservation = {

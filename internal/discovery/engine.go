@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"sort"
 	"strconv"
@@ -47,6 +48,8 @@ type Engine struct {
 	lastScanAt time.Time
 	nextScanAt time.Time
 	latestID   string
+	progress   Progress
+	onComplete func(ScanResult)
 }
 
 type knownHost struct {
@@ -62,6 +65,11 @@ type probeOutcome struct {
 	method   string
 	hostname string
 }
+
+var (
+	ipv4Pattern = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	macPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{2}[:-](?:[0-9a-f]{2}[:-]){4}[0-9a-f]{2}\b`)
+)
 
 func DefaultOptions() Options {
 	return Options{
@@ -108,6 +116,9 @@ func NewEngineWithOptions(store *storage.Engine, leaseStore lease.Store, ipamEng
 		ipamEngine: ipamEngine,
 		interval:   interval,
 		options:    NormalizeOptions(options),
+		progress: Progress{
+			Phase: "idle",
+		},
 	}
 	e.loadMeta()
 	return e
@@ -144,12 +155,25 @@ func (e *Engine) Status(_ context.Context) Status {
 		NextScheduledScan: e.nextScanAt,
 		Scanning:          e.scanning,
 		LatestScanID:      e.latestID,
+		Progress:          e.progress,
 	}
 	if latest, err := e.LatestResult(context.Background()); err == nil {
 		status.ActiveConflicts = len(latest.Conflicts)
 		status.RogueDetected = len(latest.RogueServers) > 0
 	}
 	return status
+}
+
+func (e *Engine) Progress(_ context.Context) Progress {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.progress
+}
+
+func (e *Engine) SetOnComplete(fn func(ScanResult)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onComplete = fn
 }
 
 func (e *Engine) TriggerScan(_ context.Context, request ScanRequest) (string, error) {
@@ -159,9 +183,23 @@ func (e *Engine) TriggerScan(_ context.Context, request ScanRequest) (string, er
 		return "", fmt.Errorf("scan already in progress")
 	}
 	e.scanning = true
+	now := time.Now().UTC()
+	e.progress = Progress{
+		Phase:      "initializing",
+		Total:      0,
+		Processed:  0,
+		Percent:    0,
+		StartedAt:  now,
+		UpdatedAt:  now,
+		InProgress: true,
+	}
 	e.mu.Unlock()
 
 	scanID := time.Now().UTC().Format("20060102-150405.000000000")
+	e.updateProgress(func(p *Progress) {
+		p.ScanID = scanID
+		p.Phase = "collecting"
+	})
 	go e.runScan(scanID, request)
 	return scanID, nil
 }
@@ -196,9 +234,32 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 	}
 
 	knownByIP := collectKnownHosts(leases, reservations)
+	if containsMethod(e.options.Methods, "arp") {
+		for ip, mac := range readARPNeighbors() {
+			item := knownByIP[ip]
+			if item.ip == "" {
+				item = knownHost{ip: ip, source: "arp"}
+			}
+			if item.mac == "" {
+				item.mac = mac
+			}
+			knownByIP[ip] = item
+		}
+	}
 	conflictMap := collectConflictMap(leases, reservations)
 	targets := e.buildTargets(subnets, knownByIP)
+	e.updateProgress(func(p *Progress) {
+		p.Phase = "probing"
+		p.Total = len(targets)
+		p.Processed = 0
+		p.Percent = 0
+	})
 	outcomes := e.probeTargets(targets)
+	e.updateProgress(func(p *Progress) {
+		p.Phase = "analyzing"
+		p.Processed = p.Total
+		p.Percent = 85
+	})
 
 	current := map[string]ObservedHost{}
 	now := time.Now().UTC()
@@ -276,17 +337,50 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 	result.CompletedAt = time.Now().UTC()
 	result.DurationMS = result.CompletedAt.Sub(started).Milliseconds()
 	result.Status = "completed"
+	e.updateProgress(func(p *Progress) {
+		p.Phase = "persisting"
+		p.Percent = 95
+	})
 
 	_ = e.persistResult(result)
+	e.updateProgress(func(p *Progress) {
+		p.Phase = "completed"
+		p.Percent = 100
+		p.InProgress = false
+		p.UpdatedAt = time.Now().UTC()
+	})
+	e.mu.RLock()
+	onComplete := e.onComplete
+	e.mu.RUnlock()
+	if onComplete != nil {
+		onComplete(result)
+	}
 }
 
 func (e *Engine) markScanDone() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.scanning = false
+	if e.progress.InProgress {
+		e.progress.InProgress = false
+		if e.progress.Phase != "completed" {
+			e.progress.Phase = "idle"
+		}
+		e.progress.UpdatedAt = time.Now().UTC()
+	}
 	if e.nextScanAt.Before(time.Now().UTC()) {
 		e.nextScanAt = time.Now().UTC().Add(e.interval)
 	}
+}
+
+func (e *Engine) updateProgress(mut func(p *Progress)) {
+	if mut == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	mut(&e.progress)
+	e.progress.UpdatedAt = time.Now().UTC()
 }
 
 func (e *Engine) resolveTargetSubnets(explicit []string) []ipam.Subnet {
@@ -455,6 +549,23 @@ func (e *Engine) probeTargets(targets []string) map[string]probeOutcome {
 	close(resCh)
 	for item := range resCh {
 		out[item.ip] = item.outcome
+		e.updateProgress(func(p *Progress) {
+			if p.Total <= 0 {
+				return
+			}
+			p.Processed++
+			if p.Processed > p.Total {
+				p.Processed = p.Total
+			}
+			pct := int(float64(p.Processed) / float64(p.Total) * 80.0)
+			if pct < 1 && p.Processed > 0 {
+				pct = 1
+			}
+			if pct > 80 {
+				pct = 80
+			}
+			p.Percent = pct
+		})
 	}
 	return out
 }
@@ -541,6 +652,33 @@ func normalizeMethods(methods []string) []string {
 	}
 	if len(out) == 0 {
 		out = []string{"passive"}
+	}
+	return out
+}
+
+func readARPNeighbors() map[string]string {
+	out := map[string]string{}
+	cmd := exec.Command("arp", "-a")
+	raw, err := cmd.Output()
+	if err != nil {
+		return out
+	}
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		ip := ipv4Pattern.FindString(line)
+		mac := macPattern.FindString(line)
+		if ip == "" || mac == "" {
+			continue
+		}
+		if parsed := net.ParseIP(ip); parsed == nil || parsed.To4() == nil {
+			continue
+		}
+		mac = strings.ToUpper(strings.ReplaceAll(mac, "-", ":"))
+		out[ip] = mac
 	}
 	return out
 }

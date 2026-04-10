@@ -192,8 +192,8 @@
 - [x] #104 — Implement `internal/api/websocket/events.go`: Event types — all events from SPECIFICATION §6.3 (lease.*, discovery.*, address.*, subnet.*), JSON serialization
 
 ### gRPC
-- [ ] #105 — Implement `internal/api/grpc/server.go`: gRPC server over HTTP/2 — custom binary protobuf encoding (no protoc), service registration, unary + server-streaming RPCs, mTLS support
-- [ ] #106 — Implement gRPC service handlers: SubnetService, LeaseService, AddressService, DiscoveryService — map to IPAM engine methods, streaming for WatchLeases/WatchDiscovery
+- [x] #105 — Implement `internal/api/grpc/server.go`: gRPC server over HTTP/2 — custom binary protobuf encoding (no protoc), service registration, unary + server-streaming RPCs, mTLS support
+- [x] #106 — Implement gRPC service handlers: SubnetService, LeaseService, AddressService, DiscoveryService — map to IPAM engine methods, streaming for WatchLeases/WatchDiscovery
 
 ### MCP Server
 - [x] #107 — Implement `internal/api/mcp/server.go`: MCP server — JSON-RPC 2.0 over SSE transport, tool listing, tool invocation dispatch

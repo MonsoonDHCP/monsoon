@@ -1,0 +1,181 @@
+syntax = "proto3";
+
+package monsoon.v1;
+
+service SubnetService {
+  rpc ListSubnets(Empty) returns (ListSubnetsResponse);
+  rpc CreateSubnet(SubnetMutationRequest) returns (Subnet);
+  rpc GetSubnet(CIDRRequest) returns (Subnet);
+  rpc UpdateSubnet(SubnetMutationRequest) returns (Subnet);
+  rpc DeleteSubnet(CIDRRequest) returns (Empty);
+  rpc GetSubnetUtilization(CIDRRequest) returns (UtilizationResponse);
+}
+
+service LeaseService {
+  rpc ListLeases(ListLeasesRequest) returns (ListLeasesResponse);
+  rpc GetLease(IPRequest) returns (Lease);
+  rpc ReleaseLease(IPRequest) returns (Empty);
+  rpc WatchLeases(WatchLeasesRequest) returns (stream LeaseEvent);
+}
+
+service AddressService {
+  rpc SearchAddresses(SearchAddressesRequest) returns (SearchAddressesResponse);
+  rpc GetAddress(IPRequest) returns (IPAddress);
+  rpc ReserveAddress(ReserveAddressRequest) returns (IPAddress);
+  rpc ReleaseAddress(IPRequest) returns (Empty);
+  rpc NextAvailable(NextAvailableRequest) returns (IPAddress);
+}
+
+service DiscoveryService {
+  rpc TriggerScan(TriggerScanRequest) returns (ScanResponse);
+  rpc GetConflicts(Empty) returns (ConflictsResponse);
+  rpc WatchDiscovery(Empty) returns (stream DiscoveryEvent);
+}
+
+message Empty {}
+
+message CIDRRequest {
+  string cidr = 1;
+}
+
+message IPRequest {
+  string ip = 1;
+}
+
+message SubnetMutationRequest {
+  string cidr = 1;
+  string name = 2;
+  int64 vlan = 3;
+  string gateway = 4;
+  repeated string dns = 5;
+  bool dhcp_enabled = 6;
+  string pool_start = 7;
+  string pool_end = 8;
+  int64 lease_time_sec = 9;
+}
+
+message Subnet {
+  string cidr = 1;
+  string name = 2;
+  int64 vlan = 3;
+  string gateway = 4;
+  repeated string dns = 5;
+  bool dhcp_enabled = 6;
+  string pool_start = 7;
+  string pool_end = 8;
+  int64 lease_time_sec = 9;
+  int64 created_at_unix = 10;
+  int64 updated_at_unix = 11;
+}
+
+message ListSubnetsResponse {
+  repeated Subnet items = 1;
+}
+
+message UtilizationResponse {
+  string cidr = 1;
+  string name = 2;
+  int64 active_leases = 3;
+  int64 total_leases = 4;
+  int64 utilization = 5;
+}
+
+message ListLeasesRequest {
+  string subnet_cidr = 1;
+  string state = 2;
+  string query = 3;
+  int64 limit = 4;
+}
+
+message Lease {
+  string ip = 1;
+  string mac = 2;
+  string hostname = 3;
+  string state = 4;
+  string subnet_id = 5;
+  string relay_addr = 6;
+  int64 expiry_unix = 7;
+  int64 updated_at_unix = 8;
+  int64 duration_sec = 9;
+}
+
+message ListLeasesResponse {
+  repeated Lease items = 1;
+}
+
+message WatchLeasesRequest {
+  string subnet_cidr = 1;
+}
+
+message LeaseEvent {
+  string type = 1;
+  string ip = 2;
+  Lease lease = 3;
+  int64 occurred_at_unix = 4;
+}
+
+message SearchAddressesRequest {
+  string subnet_cidr = 1;
+  string state = 2;
+  string query = 3;
+  int64 limit = 4;
+}
+
+message ReserveAddressRequest {
+  string ip = 1;
+  string subnet_cidr = 2;
+  string mac = 3;
+  string hostname = 4;
+}
+
+message NextAvailableRequest {
+  string subnet_cidr = 1;
+}
+
+message IPAddress {
+  string ip = 1;
+  string subnet_cidr = 2;
+  string state = 3;
+  string mac = 4;
+  string hostname = 5;
+  string lease_state = 6;
+  string source = 7;
+  int64 updated_at_unix = 8;
+}
+
+message SearchAddressesResponse {
+  repeated IPAddress items = 1;
+}
+
+message TriggerScanRequest {
+  string reason = 1;
+  repeated string subnets = 2;
+}
+
+message ScanResponse {
+  string status = 1;
+  string scan_id = 2;
+  string estimated_in = 3;
+}
+
+message Conflict {
+  string ip = 1;
+  repeated string macs = 2;
+  string severity = 3;
+  string note = 4;
+}
+
+message ConflictsResponse {
+  repeated Conflict items = 1;
+}
+
+message DiscoveryEvent {
+  string type = 1;
+  string scan_id = 2;
+  string subnet = 3;
+  string ip = 4;
+  int64 found = 5;
+  repeated string macs = 6;
+  int64 occurred_at_unix = 7;
+  string note = 8;
+}

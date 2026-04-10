@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	grpcapi "github.com/monsoondhcp/monsoon/internal/api/grpc"
 	"github.com/monsoondhcp/monsoon/internal/api/mcp"
 	"github.com/monsoondhcp/monsoon/internal/api/rest"
 	wsapi "github.com/monsoondhcp/monsoon/internal/api/websocket"
@@ -606,10 +607,33 @@ func run() int {
 		}()
 	}
 
+	var grpcServer *grpcapi.Server
+	grpcErr := make(chan error, 1)
+	if cfg.API.GRPC.Enabled {
+		grpcHandler := grpcapi.NewHandler(grpcapi.HandlerDeps{
+			LeaseStore:      leaseStore,
+			IPAMEngine:      ipamEngine,
+			DiscoveryEngine: discoveryEngine,
+			EventBroker:     eventBroker,
+		}).Handler()
+		grpcHandler = rest.Chain(
+			grpcHandler,
+			rest.RequestIDMiddleware(),
+			rest.RecoveryMiddleware(),
+			rest.RateLimitMiddleware(cfg.API.REST.RateLimit),
+			rest.AuthMiddleware(authService, enforceAuth),
+			rest.LoggingMiddleware(),
+		)
+		grpcServer = grpcapi.NewServer(cfg.API.GRPC.Listen, grpcHandler)
+		go func() {
+			grpcErr <- grpcServer.Start()
+		}()
+	}
+
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	log.Printf("monsoon started: rest=%s mcp=%s metrics=%s data=%s", cfg.API.REST.Listen, cfg.API.MCP.Listen, metricsPath, cfg.Server.DataDir)
+	log.Printf("monsoon started: rest=%s grpc=%s mcp=%s metrics=%s data=%s", cfg.API.REST.Listen, cfg.API.GRPC.Listen, cfg.API.MCP.Listen, metricsPath, cfg.Server.DataDir)
 
 	for {
 		select {
@@ -627,6 +651,11 @@ func run() int {
 		case err := <-mcpErr:
 			if err != nil {
 				log.Printf("mcp server error: %v", err)
+				return 1
+			}
+		case err := <-grpcErr:
+			if err != nil {
+				log.Printf("grpc server error: %v", err)
 				return 1
 			}
 		case sig := <-sigCh:
@@ -652,6 +681,12 @@ func run() int {
 				if mcpServer != nil {
 					if err := mcpServer.Shutdown(ctx); err != nil {
 						log.Printf("mcp shutdown failed: %v", err)
+						return 1
+					}
+				}
+				if grpcServer != nil {
+					if err := grpcServer.Shutdown(ctx); err != nil {
+						log.Printf("grpc shutdown failed: %v", err)
 						return 1
 					}
 				}

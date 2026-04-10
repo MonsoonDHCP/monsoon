@@ -179,8 +179,8 @@ func (r *Runner) importReservationRow(ctx context.Context, row csvRow, dryRun bo
 }
 
 func (r *Runner) importLeaseRow(ctx context.Context, row csvRow, dryRun bool, conflictPolicy string) (bool, error) {
-	ip := field(row, "ip", "address")
-	mac := field(row, "mac")
+	ip := field(row, "ip", "address", "ip_address")
+	mac := field(row, "mac", "hw_address")
 	if ip == "" || mac == "" {
 		return false, fmt.Errorf("ip and mac are required")
 	}
@@ -195,14 +195,21 @@ func (r *Runner) importLeaseRow(ctx context.Context, row csvRow, dryRun bool, co
 	}
 
 	now := time.Now().UTC()
-	startTime := timeField(row, "start_time", "starts_at", "created_at")
+	startTime := timeField(row, "start_time", "starts_at", "created_at", "cltt")
 	if startTime.IsZero() {
 		startTime = now
 	}
-	duration := durationField(row, "duration", "duration_sec", "lease_time", "lease_duration")
+	duration := durationField(row, "duration", "duration_sec", "lease_time", "lease_duration", "valid_lft")
 	expiryTime := timeField(row, "expiry_time", "expires_at", "end_time")
 	if duration <= 0 && !expiryTime.IsZero() && expiryTime.After(startTime) {
 		duration = expiryTime.Sub(startTime)
+	}
+	if expiryTime.IsZero() {
+		if expireEpoch := field(row, "expire"); expireEpoch != "" {
+			if seconds, err := strconv.ParseInt(expireEpoch, 10, 64); err == nil {
+				expiryTime = time.Unix(seconds, 0).UTC()
+			}
+		}
 	}
 	if duration <= 0 {
 		duration = 12 * time.Hour
@@ -387,6 +394,14 @@ func timeField(row csvRow, keys ...string) time.Time {
 
 func leaseStateField(row csvRow, key string) lease.LeaseState {
 	value := strings.ToLower(field(row, key))
+	switch value {
+	case "0":
+		return lease.StateBound
+	case "1":
+		return lease.StateDeclined
+	case "2":
+		return lease.StateExpired
+	}
 	switch lease.LeaseState(value) {
 	case lease.StateFree,
 		lease.StateOffered,

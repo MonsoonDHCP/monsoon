@@ -43,24 +43,25 @@ func run() int {
 	startedAt := time.Now().UTC()
 
 	var (
-		configPath   string
-		dataDirFlag  string
-		webDistDir   string
-		showVersion  bool
-		initConfig   bool
-		checkConfig  bool
-		exportConfig bool
-		doBackup     bool
-		restoreFrom  string
-		doMigrate    bool
-		migrateFrom  string
-		migrateDry   bool
-		migrateMode  string
-		migrateSub   string
-		migrateAddr  string
-		migrateRes   string
-		migrateLease string
-		debug        bool
+		configPath    string
+		dataDirFlag   string
+		webDistDir    string
+		showVersion   bool
+		initConfig    bool
+		checkConfig   bool
+		exportConfig  bool
+		doBackup      bool
+		restoreFrom   string
+		doMigrate     bool
+		migrateFrom   string
+		migrateDry    bool
+		migrateMode   string
+		migrateSrcCfg string
+		migrateSub    string
+		migrateAddr   string
+		migrateRes    string
+		migrateLease  string
+		debug         bool
 	)
 
 	flag.StringVar(&configPath, "config", "/etc/monsoon/monsoon.yaml", "Configuration file path")
@@ -75,9 +76,10 @@ func run() int {
 	flag.BoolVar(&doBackup, "backup", false, "Create backup snapshot and exit")
 	flag.StringVar(&restoreFrom, "restore", "", "Restore snapshot file")
 	flag.BoolVar(&doMigrate, "migrate", false, "Run migrations and exit")
-	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv)")
+	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, kea)")
 	flag.BoolVar(&migrateDry, "dry-run", false, "Validate migration inputs without writing")
 	flag.StringVar(&migrateMode, "conflict-policy", migrate.ConflictOverwrite, "Conflict policy (overwrite|skip)")
+	flag.StringVar(&migrateSrcCfg, "source-config", "", "Source configuration file for migration adapters such as Kea")
 	flag.StringVar(&migrateSub, "subnets", "", "CSV file containing subnet records")
 	flag.StringVar(&migrateAddr, "addresses", "", "CSV file containing address records")
 	flag.StringVar(&migrateRes, "reservations", "", "CSV file containing reservation records")
@@ -213,6 +215,7 @@ func run() int {
 			Source:         migrateFrom,
 			DryRun:         migrateDry,
 			ConflictPolicy: migrateMode,
+			SourceConfig:   migrateSrcCfg,
 			CSV: migrate.CSVOptions{
 				SubnetsPath:      migrateSub,
 				AddressesPath:    migrateAddr,

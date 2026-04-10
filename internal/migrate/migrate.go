@@ -13,6 +13,7 @@ import (
 
 const (
 	SourceCSV = "csv"
+	SourceKea = "kea"
 
 	ConflictOverwrite = "overwrite"
 	ConflictSkip      = "skip"
@@ -29,6 +30,7 @@ type Options struct {
 	Source         string
 	DryRun         bool
 	ConflictPolicy string
+	SourceConfig   string
 	CSV            CSVOptions
 }
 
@@ -74,6 +76,9 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Report, error) {
 	if source == "" && (opts.CSV.SubnetsPath != "" || opts.CSV.AddressesPath != "" || opts.CSV.ReservationsPath != "" || opts.CSV.LeasesPath != "") {
 		source = SourceCSV
 	}
+	if source == "" && strings.TrimSpace(opts.SourceConfig) != "" {
+		source = SourceKea
+	}
 	report := Report{
 		Source:    source,
 		DryRun:    opts.DryRun,
@@ -103,6 +108,18 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Report, error) {
 		csvReport, err := r.runCSV(ctx, opts.CSV, opts.DryRun, policy)
 		report.Files = csvReport.Files
 		report.Warnings = append(report.Warnings, csvReport.Warnings...)
+		report.CompletedAt = time.Now().UTC()
+		if err != nil {
+			return report, err
+		}
+		if hasRowErrors(report.Files) {
+			return report, fmt.Errorf("migration completed with %d row errors", countRowErrors(report.Files))
+		}
+		return report, nil
+	case SourceKea:
+		keaReport, err := r.runKea(ctx, opts.SourceConfig, opts.CSV.LeasesPath, opts.DryRun, policy)
+		report.Files = keaReport.Files
+		report.Warnings = append(report.Warnings, keaReport.Warnings...)
 		report.CompletedAt = time.Now().UTC()
 		if err != nil {
 			return report, err

@@ -19,6 +19,7 @@ import (
 
 	"github.com/monsoondhcp/monsoon/internal/api/mcp"
 	"github.com/monsoondhcp/monsoon/internal/api/rest"
+	wsapi "github.com/monsoondhcp/monsoon/internal/api/websocket"
 	"github.com/monsoondhcp/monsoon/internal/audit"
 	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/config"
@@ -266,11 +267,24 @@ func run() int {
 			return 1
 		}
 	}
+	eventBroker := events.NewBroker(64)
 	quarantine := cfg.IPAM.Discovery.QuarantinePeriod.Duration
 	if quarantine <= 0 {
 		quarantine = 15 * time.Minute
 	}
-	sweeper := lease.NewSweeper(leaseStore, 30*time.Second, quarantine, nil)
+	sweeper := lease.NewSweeper(leaseStore, 30*time.Second, quarantine, func(item lease.Lease) {
+		switch item.State {
+		case lease.StateExpired:
+			eventBroker.Publish(events.Event{
+				Type: "lease.expired",
+				Data: map[string]any{
+					"ip":     item.IP,
+					"mac":    item.MAC,
+					"subnet": item.SubnetID,
+				},
+			})
+		}
+	})
 	sweeper.Start()
 	defer sweeper.Stop()
 
@@ -297,6 +311,21 @@ func run() int {
 			cfg.DHCP.DefaultLeaseTime.Duration,
 			cfg.DHCP.MaxLeaseTime.Duration,
 		)
+		handler.SetOnLeaseEvent(func(eventType string, item lease.Lease) {
+			data := map[string]any{
+				"ip":       item.IP,
+				"mac":      item.MAC,
+				"hostname": item.Hostname,
+				"subnet":   item.SubnetID,
+			}
+			if eventType == "lease.renewed" {
+				remaining := time.Until(item.ExpiryTime).Round(time.Second)
+				if remaining > 0 {
+					data["remaining"] = remaining.String()
+				}
+			}
+			eventBroker.Publish(events.Event{Type: eventType, Data: data})
+		})
 		dhcpServer = dhcpv4.NewServer(cfg.DHCP.V4.Listen, handler)
 		go func() {
 			dhcpErr <- dhcpServer.Start(runCtx)
@@ -306,17 +335,23 @@ func run() int {
 
 	reg := metrics.NewRegistry()
 	reg.SetGauge("monsoon_build_info", map[string]string{"version": version}, 1)
-	eventBroker := events.NewBroker(64)
+	var wsHub *wsapi.Hub
+	if cfg.API.WebSocket.Enabled {
+		wsHub = wsapi.NewHub(eventBroker)
+		wsHub.Start(runCtx)
+	}
 	discoveryEngine.SetOnComplete(func(result discovery.ScanResult) {
 		eventBroker.Publish(events.Event{
 			Type: "discovery.scan_completed",
 			Data: map[string]any{
 				"scan_id":       result.ScanID,
+				"subnet":        firstSubnet(result.Subnets),
+				"subnet_cidr":   firstSubnet(result.Subnets),
 				"total_hosts":   result.TotalHosts,
 				"new_hosts":     result.NewHosts,
 				"changed_hosts": result.ChangedHosts,
 				"missing_hosts": result.MissingHosts,
-				"conflicts":     len(result.Conflicts),
+				"conflicts":     result.Conflicts,
 				"rogue_servers": len(result.RogueServers),
 				"duration_ms":   result.DurationMS,
 				"completed_at":  result.CompletedAt,
@@ -489,6 +524,9 @@ func run() int {
 		if err := rest.RegisterRoutes(mux, deps); err != nil {
 			return nil, err
 		}
+		if wsHub != nil {
+			mux.Handle("GET /ws", wsHub.Handler())
+		}
 		return mux, nil
 	}
 
@@ -646,4 +684,11 @@ func printMigrationReport(report migrate.Report) {
 	for _, warning := range report.Warnings {
 		fmt.Printf("warning: %s\n", warning)
 	}
+}
+
+func firstSubnet(items []string) string {
+	if len(items) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(items[0])
 }

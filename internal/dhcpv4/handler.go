@@ -15,6 +15,7 @@ type Handler struct {
 	serverIP     net.IP
 	defaultLease time.Duration
 	maxLease     time.Duration
+	onLeaseEvent func(string, lease.Lease)
 }
 
 func NewHandler(store lease.Store, pools *PoolManager, serverIP net.IP, defaultLease, maxLease time.Duration) *Handler {
@@ -31,6 +32,10 @@ func NewHandler(store lease.Store, pools *PoolManager, serverIP net.IP, defaultL
 		defaultLease: defaultLease,
 		maxLease:     maxLease,
 	}
+}
+
+func (h *Handler) SetOnLeaseEvent(fn func(string, lease.Lease)) {
+	h.onLeaseEvent = fn
 }
 
 func (h *Handler) Handle(ctx context.Context, req Packet, _ *net.UDPAddr) (*Packet, error) {
@@ -102,6 +107,9 @@ func (h *Handler) handleDiscover(ctx context.Context, req Packet, rapidCommit bo
 	if err := h.store.Upsert(ctx, l); err != nil {
 		return nil, err
 	}
+	if rapidCommit && h.onLeaseEvent != nil {
+		h.onLeaseEvent("lease.created", l)
+	}
 
 	resp := h.baseResponse(req)
 	resp.YIAddr = alloc.IP
@@ -133,6 +141,7 @@ func (h *Handler) handleRequest(ctx context.Context, req Packet) (*Packet, error
 	}
 
 	now := time.Now().UTC()
+	old, oldErr := h.store.GetByIP(ctx, alloc.IP.String())
 	l := lease.Lease{
 		IP:          alloc.IP.String(),
 		MAC:         req.ClientMAC().String(),
@@ -150,6 +159,13 @@ func (h *Handler) handleRequest(ctx context.Context, req Packet) (*Packet, error
 	}
 	if err := h.store.Upsert(ctx, l); err != nil {
 		return nil, err
+	}
+	if h.onLeaseEvent != nil {
+		eventType := "lease.created"
+		if oldErr == nil && old.State != lease.StateFree {
+			eventType = "lease.renewed"
+		}
+		h.onLeaseEvent(eventType, l)
 	}
 
 	resp := h.baseResponse(req)
@@ -177,6 +193,9 @@ func (h *Handler) handleRelease(ctx context.Context, req Packet) error {
 	if err := h.store.Upsert(ctx, l); err != nil {
 		return err
 	}
+	if h.onLeaseEvent != nil {
+		h.onLeaseEvent("lease.released", l)
+	}
 	h.pools.Release(ip, l.SubnetID)
 	return nil
 }
@@ -199,6 +218,9 @@ func (h *Handler) handleDecline(ctx context.Context, req Packet) error {
 	l.UpdatedAt = now
 	if err := h.store.Upsert(ctx, l); err != nil {
 		return err
+	}
+	if h.onLeaseEvent != nil {
+		h.onLeaseEvent("lease.conflict", l)
 	}
 	return nil
 }

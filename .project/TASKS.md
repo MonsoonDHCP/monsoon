@@ -187,9 +187,9 @@
 ## Phase 9: Advanced Features (Tasks #102–#113)
 
 ### WebSocket & Events
-- [ ] #102 — Implement `internal/api/websocket/hub.go`: WebSocket hub — connection registry, topic-based subscription, broadcast to subscribers, connection cleanup on disconnect
-- [ ] #103 — Implement `internal/api/websocket/client.go`: WebSocket client handler — upgrade HTTP connection, read subscription messages, write events, ping/pong keepalive
-- [ ] #104 — Implement `internal/api/websocket/events.go`: Event types — all events from SPECIFICATION §6.3 (lease.*, discovery.*, address.*, subnet.*), JSON serialization
+- [x] #102 — Implement `internal/api/websocket/hub.go`: WebSocket hub — connection registry, topic-based subscription, broadcast to subscribers, connection cleanup on disconnect
+- [x] #103 — Implement `internal/api/websocket/client.go`: WebSocket client handler — upgrade HTTP connection, read subscription messages, write events, ping/pong keepalive
+- [x] #104 — Implement `internal/api/websocket/events.go`: Event types — all events from SPECIFICATION §6.3 (lease.*, discovery.*, address.*, subnet.*), JSON serialization
 
 ### gRPC
 - [ ] #105 — Implement `internal/api/grpc/server.go`: gRPC server over HTTP/2 — custom binary protobuf encoding (no protoc), service registration, unary + server-streaming RPCs, mTLS support

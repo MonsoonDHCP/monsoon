@@ -362,6 +362,9 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 				},
 			}
 		},
+		UpdateConfig: func(_ context.Context, payload map[string]any) (any, error) {
+			return payload, nil
+		},
 		CreateBackup: func(context.Context) (SystemBackup, error) {
 			return SystemBackup{
 				Name:      "monsoon-test.snapshot",
@@ -407,6 +410,16 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 	}
 	if exportRR.Body.Len() == 0 {
 		t.Fatalf("expected export body")
+	}
+
+	updateRR := httptest.NewRecorder()
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/v1/system/config", bytes.NewReader([]byte(`{"auth":{"password":"new-secret"},"api":{"rest":{"listen":":19067"}}}`)))
+	mux.ServeHTTP(updateRR, updateReq)
+	if updateRR.Code != http.StatusOK {
+		t.Fatalf("system config update status mismatch: got %d body=%s", updateRR.Code, updateRR.Body.String())
+	}
+	if !bytes.Contains(updateRR.Body.Bytes(), []byte(`"password":"***"`)) {
+		t.Fatalf("expected masked password in update response: %s", updateRR.Body.String())
 	}
 
 	listRR := httptest.NewRecorder()

@@ -1,5 +1,5 @@
-import { HardDriveDownload, KeyRound, LogIn, LogOut, MoonStar, Palette, RefreshCw, Save, Server, Shield, SunMedium, Trash2, UserRound } from "lucide-react"
-import { useEffect, useState } from "react"
+import { Copy, HardDriveDownload, KeyRound, LogIn, LogOut, MoonStar, Palette, RefreshCw, Save, Server, Shield, SunMedium, Trash2, UserRound } from "lucide-react"
+import { useEffect, useMemo, useState } from "react"
 import { useTheme } from "next-themes"
 
 import { useDashboard } from "@/app/dashboard-context"
@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import type { UISettings } from "@/types/api"
 
 export function SettingsPage() {
-  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, backups, createBackup, refreshBackups } = useDashboard()
+  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, systemConfig, backups, createBackup, refreshBackups, refreshSystemConfig, saveSystemConfig } = useDashboard()
   const { setTheme } = useTheme()
   const [local, setLocal] = useState<UISettings>({
     theme: "system",
@@ -19,12 +19,46 @@ export function SettingsPage() {
   })
   const [authForm, setAuthForm] = useState({ username: "admin", password: "" })
   const [tokenForm, setTokenForm] = useState({ name: "", role: "operator", expires_in_hours: 24, description: "" })
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle")
+  const [configDraft, setConfigDraft] = useState("")
+  const [configEditing, setConfigEditing] = useState(false)
+  const [configError, setConfigError] = useState<string | null>(null)
+
+  const systemConfigJSON = useMemo(() => JSON.stringify(systemConfig ?? {}, null, 2), [systemConfig])
 
   useEffect(() => {
     if (settings) {
       setLocal(settings)
     }
   }, [settings])
+
+  useEffect(() => {
+    if (!configEditing) {
+      setConfigDraft(systemConfigJSON)
+      setConfigError(null)
+    }
+  }, [configEditing, systemConfigJSON])
+
+  const copyConfig = async () => {
+    try {
+      await navigator.clipboard.writeText(configDraft || systemConfigJSON)
+      setCopyState("copied")
+    } catch {
+      setCopyState("failed")
+    }
+    setTimeout(() => setCopyState("idle"), 1400)
+  }
+
+  const saveConfigDraft = async () => {
+    try {
+      setConfigError(null)
+      const parsed = JSON.parse(configDraft) as Record<string, unknown>
+      await saveSystemConfig(parsed)
+      setConfigEditing(false)
+    } catch (err) {
+      setConfigError(err instanceof Error ? err.message : "Invalid configuration JSON")
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -260,6 +294,14 @@ export function SettingsPage() {
               <RefreshCw className="mr-2 size-4" />
               Refresh backups
             </Button>
+            <Button variant="outline" onClick={() => void refreshSystemConfig()}>
+              <RefreshCw className="mr-2 size-4" />
+              Refresh config
+            </Button>
+            <Button variant="outline" onClick={() => void copyConfig()}>
+              <Copy className="mr-2 size-4" />
+              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy config"}
+            </Button>
             <Button variant="outline" size="sm" asChild>
               <a href="/api/v1/system/config/export?format=yaml" target="_blank" rel="noreferrer">
                 Export config YAML
@@ -270,6 +312,32 @@ export function SettingsPage() {
                 Export config JSON
               </a>
             </Button>
+          </div>
+
+          <div className="rounded-lg border border-border/70 bg-background/60">
+            <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
+              <span className="text-xs text-muted-foreground">Sanitized runtime config</span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setConfigEditing((v) => !v)} disabled={!isAdmin || !canMutate}>
+                  {configEditing ? "Cancel edit" : "Edit config"}
+                </Button>
+                {configEditing ? (
+                  <Button size="sm" onClick={() => void saveConfigDraft()} disabled={!isAdmin || !canMutate}>
+                    Save config
+                  </Button>
+                ) : null}
+              </div>
+            </div>
+            {configEditing ? (
+              <textarea
+                value={configDraft}
+                onChange={(event) => setConfigDraft(event.target.value)}
+                className="h-72 w-full resize-y bg-transparent px-3 py-2 font-mono text-[11px] leading-relaxed text-foreground/90 outline-none"
+              />
+            ) : (
+              <pre className="max-h-72 overflow-auto px-3 py-2 text-[11px] leading-relaxed text-foreground/90">{systemConfigJSON}</pre>
+            )}
+            {configError ? <p className="border-t border-border/60 px-3 py-2 text-xs text-rose-300">{configError}</p> : null}
           </div>
 
           <div className="space-y-2">

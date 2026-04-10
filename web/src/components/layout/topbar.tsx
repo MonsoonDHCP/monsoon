@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { Sidebar } from "@/components/layout/sidebar"
 
 export function Topbar() {
-  const { reload, loading, currentUser, logoutCurrentUser, discoveryProgress } = useDashboard()
+  const { reload, loading, currentUser, logoutCurrentUser, discoveryProgress, notifications, clearNotifications } = useDashboard()
   const initials = currentUser?.username
     ? currentUser.username
         .split(/[._-]/g)
@@ -60,9 +60,36 @@ export function Topbar() {
           </Tooltip>
         </TooltipProvider>
 
-        <Button variant="outline" size="icon" aria-label="Notifications">
-          <Bell className="size-4" />
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="icon" aria-label="Notifications" className="relative">
+              <Bell className="size-4" />
+              {notifications.length > 0 ? (
+                <span className="absolute -right-1 -top-1 inline-flex min-w-4 items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] text-white">
+                  {Math.min(notifications.length, 9)}
+                </span>
+              ) : null}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-96">
+            <DropdownMenuLabel className="flex items-center justify-between">
+              <span>Notifications</span>
+              <Button variant="ghost" size="sm" onClick={clearNotifications} className="h-7 px-2 text-xs">
+                Clear
+              </Button>
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <div className="max-h-72 space-y-1 overflow-auto p-1">
+              {notifications.slice(0, 12).map((item) => (
+                <div key={item.id} className="rounded-md border border-border/50 bg-background/60 px-2 py-1.5">
+                  <p className="text-xs text-foreground">{item.message}</p>
+                  <p className="text-[10px] text-muted-foreground">{new Date(item.at).toLocaleString()}</p>
+                </div>
+              ))}
+              {notifications.length === 0 ? <p className="px-2 py-3 text-xs text-muted-foreground">No recent events.</p> : null}
+            </div>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <ThemeToggle />
 

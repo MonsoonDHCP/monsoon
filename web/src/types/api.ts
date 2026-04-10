@@ -32,6 +32,8 @@ export type SystemBackup = {
   created_at: string
 }
 
+export type SystemConfig = Record<string, unknown>
+
 export type Lease = {
   ip: string
   mac: string

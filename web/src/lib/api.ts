@@ -12,6 +12,7 @@ import type {
   DiscoveryStatus,
   HealthResponse,
   SystemBackup,
+  SystemConfig,
   SystemInfo,
   Lease,
   Reservation,
@@ -74,6 +75,17 @@ export function fetchSystemInfo() {
 
 export function fetchSystemBackups() {
   return request<SystemBackup[]>("/api/v1/system/backups")
+}
+
+export function fetchSystemConfig() {
+  return request<SystemConfig>("/api/v1/system/config")
+}
+
+export function updateSystemConfig(payload: SystemConfig) {
+  return request<SystemConfig>("/api/v1/system/config", {
+    method: "PUT",
+    body: JSON.stringify(payload),
+  })
 }
 
 export function createSystemBackup() {

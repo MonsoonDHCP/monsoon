@@ -53,6 +53,7 @@ type RouterDeps struct {
 	EventBroker      *events.Broker
 	StartedAt        time.Time
 	ConfigSnapshot   func() any
+	UpdateConfig     func(context.Context, map[string]any) (any, error)
 	CreateBackup     func(context.Context) (SystemBackup, error)
 	ListBackups      func(context.Context) ([]SystemBackup, error)
 }
@@ -156,6 +157,27 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 		snapshot := deps.ConfigSnapshot()
 		sanitized := sanitizeConfigSnapshot(snapshot)
 		WriteJSON(w, http.StatusOK, sanitized, nil)
+	})
+
+	mux.HandleFunc("PUT /api/v1/system/config", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
+		if deps.UpdateConfig == nil {
+			WriteError(w, http.StatusNotImplemented, "config_update_unavailable", "config update is not configured")
+			return
+		}
+		var payload map[string]any
+		if err := decodeJSONBody(r, &payload); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
+			return
+		}
+		updated, err := deps.UpdateConfig(r.Context(), payload)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "config_update_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, sanitizeConfigSnapshot(updated), nil)
 	})
 
 	mux.HandleFunc("GET /api/v1/system/config/export", func(w http.ResponseWriter, r *http.Request) {

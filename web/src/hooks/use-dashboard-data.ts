@@ -18,6 +18,7 @@ import {
   fetchDiscoveryStatus,
   fetchHealth,
   fetchSystemBackups,
+  fetchSystemConfig,
   fetchSystemInfo,
   fetchLeases,
   fetchReservations,
@@ -29,6 +30,7 @@ import {
   releaseLease,
   revokeAuthToken,
   triggerDiscoveryScan,
+  updateSystemConfig,
   updateUISettings,
   upsertReservation,
   upsertSubnet,
@@ -50,6 +52,7 @@ import type {
   Subnet,
   SubnetSummary,
   SystemBackup,
+  SystemConfig,
   SystemInfo,
   UISettings,
   UpsertReservationPayload,
@@ -59,6 +62,7 @@ import type {
 type DashboardState = {
   health: HealthResponse | null
   systemInfo: SystemInfo | null
+  systemConfig: SystemConfig | null
   backups: SystemBackup[]
   leases: Lease[]
   subnets: SubnetSummary[]
@@ -80,6 +84,7 @@ type DashboardState = {
   isAdmin: boolean
   loading: boolean
   error: string | null
+  notifications: { id: string; type: string; message: string; at: string }[]
   reload: () => Promise<void>
   release: (ip: string) => Promise<void>
   reserveLease: (ip: string) => Promise<void>
@@ -97,11 +102,15 @@ type DashboardState = {
   revokeToken: (id: string) => Promise<void>
   createBackup: () => Promise<void>
   refreshBackups: () => Promise<void>
+  refreshSystemConfig: () => Promise<void>
+  clearNotifications: () => void
+  saveSystemConfig: (payload: SystemConfig) => Promise<void>
 }
 
 export function useDashboardData(): DashboardState {
   const [health, setHealth] = useState<HealthResponse | null>(null)
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
+  const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null)
   const [backups, setBackups] = useState<SystemBackup[]>([])
   const [leases, setLeases] = useState<Lease[]>([])
   const [subnets, setSubnets] = useState<SubnetSummary[]>([])
@@ -121,6 +130,7 @@ export function useDashboardData(): DashboardState {
   const [authRequired, setAuthRequired] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [notifications, setNotifications] = useState<{ id: string; type: string; message: string; at: string }[]>([])
 
   const load = useCallback(async () => {
     try {
@@ -129,8 +139,9 @@ export function useDashboardData(): DashboardState {
       const healthData = await fetchHealth()
       setHealth(healthData)
 
-      const [systemInfoData, backupsData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
+      const [systemInfoData, systemConfigData, backupsData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
         fetchSystemInfo(),
+        fetchSystemConfig(),
         fetchSystemBackups(),
         fetchLeases(),
         fetchSubnets(),
@@ -147,6 +158,7 @@ export function useDashboardData(): DashboardState {
       ])
       setLeases(leaseData)
       setSystemInfo(systemInfoData)
+      setSystemConfig(systemConfigData)
       setBackups(backupsData)
       setSubnets(subnetData)
       setSubnetRecords(subnetRawData)
@@ -181,6 +193,7 @@ export function useDashboardData(): DashboardState {
         setAuthTokens([])
         setLeases([])
         setSystemInfo(null)
+        setSystemConfig(null)
         setBackups([])
         setSubnets([])
         setSubnetRecords([])
@@ -193,6 +206,7 @@ export function useDashboardData(): DashboardState {
         setRogueServers([])
         setAuditEntries([])
         setSettings(null)
+        setNotifications([])
         setError("Authentication required. Please sign in.")
       } else {
         const message = err instanceof Error ? err.message : "Unknown error"
@@ -329,10 +343,42 @@ export function useDashboardData(): DashboardState {
     setBackups(rows)
   }, [])
 
+  const refreshSystemConfig = useCallback(async () => {
+    const cfg = await fetchSystemConfig()
+    setSystemConfig(cfg)
+  }, [])
+
+  const saveSystemConfig = useCallback(async (payload: SystemConfig) => {
+    const updated = await updateSystemConfig(payload)
+    setSystemConfig(updated)
+  }, [])
+
   const createBackup = useCallback(async () => {
     await createSystemBackup()
     await refreshBackups()
   }, [refreshBackups])
+
+  const clearNotifications = useCallback(() => {
+    setNotifications([])
+  }, [])
+
+  const pushNotification = useCallback((type: string, payload?: Record<string, unknown>) => {
+    const at = new Date().toISOString()
+    const suffix =
+      typeof payload?.ip === "string"
+        ? ` (${payload.ip})`
+        : typeof payload?.cidr === "string"
+          ? ` (${payload.cidr})`
+          : typeof payload?.scan_id === "string"
+            ? ` (${payload.scan_id})`
+            : ""
+    const message = `${type}${suffix}`
+
+    setNotifications((prev) => {
+      const next = [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, type, message, at }, ...prev]
+      return next.slice(0, 40)
+    })
+  }, [])
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null
@@ -354,29 +400,54 @@ export function useDashboardData(): DashboardState {
       return
     }
     const source = new EventSource("/api/v1/events")
-    const refresh = () => {
-      void load()
+    const parsePayload = (evt: Event): Record<string, unknown> => {
+      try {
+        const raw = (evt as MessageEvent).data
+        if (typeof raw !== "string" || !raw.trim()) {
+          return {}
+        }
+        const decoded = JSON.parse(raw) as { data?: Record<string, unknown> }
+        return decoded?.data ?? {}
+      } catch {
+        return {}
+      }
     }
-    source.addEventListener("lease.released", refresh)
-    source.addEventListener("subnet.upserted", refresh)
-    source.addEventListener("subnet.deleted", refresh)
-    source.addEventListener("reservation.upserted", refresh)
-    source.addEventListener("reservation.deleted", refresh)
-    source.addEventListener("discovery.scan_queued", refresh)
-    source.addEventListener("discovery.scan_completed", refresh)
-    source.addEventListener("settings.ui_updated", refresh)
+    const makeHandler = (eventType: string) => {
+      return (evt: Event) => {
+        pushNotification(eventType, parsePayload(evt))
+        void load()
+      }
+    }
+
+    const leaseReleased = makeHandler("lease.released")
+    const subnetUpserted = makeHandler("subnet.upserted")
+    const subnetDeleted = makeHandler("subnet.deleted")
+    const reservationUpserted = makeHandler("reservation.upserted")
+    const reservationDeleted = makeHandler("reservation.deleted")
+    const discoveryQueued = makeHandler("discovery.scan_queued")
+    const discoveryCompleted = makeHandler("discovery.scan_completed")
+    const settingsUpdated = makeHandler("settings.ui_updated")
+
+    source.addEventListener("lease.released", leaseReleased)
+    source.addEventListener("subnet.upserted", subnetUpserted)
+    source.addEventListener("subnet.deleted", subnetDeleted)
+    source.addEventListener("reservation.upserted", reservationUpserted)
+    source.addEventListener("reservation.deleted", reservationDeleted)
+    source.addEventListener("discovery.scan_queued", discoveryQueued)
+    source.addEventListener("discovery.scan_completed", discoveryCompleted)
+    source.addEventListener("settings.ui_updated", settingsUpdated)
     return () => {
-      source.removeEventListener("lease.released", refresh)
-      source.removeEventListener("subnet.upserted", refresh)
-      source.removeEventListener("subnet.deleted", refresh)
-      source.removeEventListener("reservation.upserted", refresh)
-      source.removeEventListener("reservation.deleted", refresh)
-      source.removeEventListener("discovery.scan_queued", refresh)
-      source.removeEventListener("discovery.scan_completed", refresh)
-      source.removeEventListener("settings.ui_updated", refresh)
+      source.removeEventListener("lease.released", leaseReleased)
+      source.removeEventListener("subnet.upserted", subnetUpserted)
+      source.removeEventListener("subnet.deleted", subnetDeleted)
+      source.removeEventListener("reservation.upserted", reservationUpserted)
+      source.removeEventListener("reservation.deleted", reservationDeleted)
+      source.removeEventListener("discovery.scan_queued", discoveryQueued)
+      source.removeEventListener("discovery.scan_completed", discoveryCompleted)
+      source.removeEventListener("settings.ui_updated", settingsUpdated)
       source.close()
     }
-  }, [authRequired, load])
+  }, [authRequired, load, pushNotification])
 
   return useMemo(
     () => {
@@ -387,6 +458,7 @@ export function useDashboardData(): DashboardState {
       return {
         health,
         systemInfo,
+        systemConfig,
         backups,
         leases,
         subnets,
@@ -408,6 +480,7 @@ export function useDashboardData(): DashboardState {
         isAdmin,
         loading,
         error,
+        notifications,
         reload: load,
         release,
         reserveLease,
@@ -425,11 +498,15 @@ export function useDashboardData(): DashboardState {
         revokeToken,
         createBackup,
         refreshBackups,
+        refreshSystemConfig,
+        clearNotifications,
+        saveSystemConfig,
       }
     },
     [
       health,
       systemInfo,
+      systemConfig,
       backups,
       leases,
       subnets,
@@ -449,6 +526,7 @@ export function useDashboardData(): DashboardState {
       authRequired,
       loading,
       error,
+      notifications,
       load,
       release,
       reserveLease,
@@ -466,6 +544,9 @@ export function useDashboardData(): DashboardState {
       revokeToken,
       createBackup,
       refreshBackups,
+      refreshSystemConfig,
+      clearNotifications,
+      saveSystemConfig,
     ],
   )
 }

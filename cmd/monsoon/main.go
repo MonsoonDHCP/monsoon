@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -298,6 +299,36 @@ func run() int {
 				snapshot.Server.DataDir = dataDirFlag
 			}
 			return snapshot
+		},
+		UpdateConfig: func(_ context.Context, payload map[string]any) (any, error) {
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				return nil, err
+			}
+
+			next := config.DefaultConfig()
+			if err := json.Unmarshal(raw, next); err != nil {
+				return nil, err
+			}
+			if err := config.Validate(next); err != nil {
+				return nil, err
+			}
+
+			body, err := yaml.Marshal(next)
+			if err != nil {
+				return nil, err
+			}
+			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+				return nil, err
+			}
+			if err := cfgManager.Reload(); err != nil {
+				return nil, err
+			}
+			updated := cfgManager.Get()
+			if dataDirFlag != "" {
+				updated.Server.DataDir = dataDirFlag
+			}
+			return updated, nil
 		},
 		CreateBackup: func(_ context.Context) (rest.SystemBackup, error) {
 			snapshot := cfgManager.Get()

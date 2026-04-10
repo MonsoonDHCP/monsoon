@@ -115,6 +115,10 @@ export function OverviewPage() {
               <span>Data refresh</span>
               <span className="text-muted-foreground">15s polling</span>
             </div>
+            <div className="flex items-center justify-between rounded-lg bg-muted/50 px-3 py-2">
+              <span>Uptime</span>
+              <span className="text-muted-foreground">{health?.uptime ?? "-"}</span>
+            </div>
           </CardContent>
         </Card>
       </div>

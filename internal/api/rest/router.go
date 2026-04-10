@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,12 +20,20 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
 	uisettings "github.com/monsoondhcp/monsoon/internal/settings"
+	"gopkg.in/yaml.v3"
 )
 
 type DashboardConfig struct {
 	Enabled  bool
 	DistDir  string
 	BasePath string
+}
+
+type SystemBackup struct {
+	Name      string    `json:"name"`
+	Path      string    `json:"path"`
+	SizeBytes int64     `json:"size_bytes"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type RouterDeps struct {
@@ -42,26 +51,14 @@ type RouterDeps struct {
 	Dashboard        DashboardConfig
 	UISettings       uisettings.UIStore
 	EventBroker      *events.Broker
+	StartedAt        time.Time
+	ConfigSnapshot   func() any
+	CreateBackup     func(context.Context) (SystemBackup, error)
+	ListBackups      func(context.Context) ([]SystemBackup, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
-	mux.HandleFunc("GET /api/v1/system/health", func(w http.ResponseWriter, _ *http.Request) {
-		running := false
-		if deps.DHCPv4Running != nil {
-			running = deps.DHCPv4Running()
-		}
-		WriteJSON(w, http.StatusOK, map[string]any{
-			"status":  "healthy",
-			"version": deps.Version,
-			"components": map[string]any{
-				"dhcpv4": map[string]any{
-					"enabled": deps.DHCPv4Enabled,
-					"listen":  deps.DHCPv4Listen,
-					"running": running,
-				},
-			},
-		}, nil)
-	})
+	registerSystemRoutes(mux, deps)
 
 	if deps.LeaseStore != nil {
 		registerLeaseRoutes(mux, deps.LeaseStore, deps.IPAMEngine, deps.EventBroker, deps.AuditLogger)
@@ -101,6 +98,164 @@ func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
 	}
 
 	return nil
+}
+
+func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
+	mux.HandleFunc("GET /api/v1/system/health", func(w http.ResponseWriter, _ *http.Request) {
+		running := false
+		if deps.DHCPv4Running != nil {
+			running = deps.DHCPv4Running()
+		}
+		now := time.Now().UTC()
+		startedAt := deps.StartedAt
+		uptime := "0s"
+		if !startedAt.IsZero() && now.After(startedAt) {
+			uptime = now.Sub(startedAt).Round(time.Second).String()
+		}
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"status":     "healthy",
+			"version":    deps.Version,
+			"started_at": startedAt,
+			"uptime":     uptime,
+			"components": map[string]any{
+				"dhcpv4": map[string]any{
+					"enabled": deps.DHCPv4Enabled,
+					"listen":  deps.DHCPv4Listen,
+					"running": running,
+				},
+			},
+		}, nil)
+	})
+
+	mux.HandleFunc("GET /api/v1/system/info", func(w http.ResponseWriter, _ *http.Request) {
+		now := time.Now().UTC()
+		startedAt := deps.StartedAt
+		uptimeSec := int64(0)
+		if !startedAt.IsZero() && now.After(startedAt) {
+			uptimeSec = int64(now.Sub(startedAt).Seconds())
+		}
+		WriteJSON(w, http.StatusOK, map[string]any{
+			"version":    deps.Version,
+			"started_at": startedAt,
+			"now":        now,
+			"uptime_sec": uptimeSec,
+			"runtime": map[string]any{
+				"goos":       runtime.GOOS,
+				"goarch":     runtime.GOARCH,
+				"gomaxprocs": runtime.GOMAXPROCS(0),
+				"num_cpu":    runtime.NumCPU(),
+			},
+		}, nil)
+	})
+
+	mux.HandleFunc("GET /api/v1/system/config", func(w http.ResponseWriter, _ *http.Request) {
+		if deps.ConfigSnapshot == nil {
+			WriteError(w, http.StatusNotImplemented, "config_unavailable", "config snapshot is not available")
+			return
+		}
+		snapshot := deps.ConfigSnapshot()
+		sanitized := sanitizeConfigSnapshot(snapshot)
+		WriteJSON(w, http.StatusOK, sanitized, nil)
+	})
+
+	mux.HandleFunc("GET /api/v1/system/config/export", func(w http.ResponseWriter, r *http.Request) {
+		if deps.ConfigSnapshot == nil {
+			WriteError(w, http.StatusNotImplemented, "config_unavailable", "config snapshot is not available")
+			return
+		}
+		snapshot := sanitizeConfigSnapshot(deps.ConfigSnapshot())
+		format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+		if format == "" {
+			format = "yaml"
+		}
+		switch format {
+		case "yaml", "yml":
+			raw, err := yaml.Marshal(snapshot)
+			if err != nil {
+				WriteError(w, http.StatusInternalServerError, "config_export_failed", err.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/yaml")
+			w.Header().Set("Content-Disposition", `attachment; filename="monsoon-config.yaml"`)
+			_, _ = w.Write(raw)
+		case "json":
+			raw, err := json.MarshalIndent(snapshot, "", "  ")
+			if err != nil {
+				WriteError(w, http.StatusInternalServerError, "config_export_failed", err.Error())
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Disposition", `attachment; filename="monsoon-config.json"`)
+			_, _ = w.Write(raw)
+		default:
+			WriteError(w, http.StatusBadRequest, "invalid_format", "format must be yaml or json")
+		}
+	})
+
+	mux.HandleFunc("GET /api/v1/system/backups", func(w http.ResponseWriter, r *http.Request) {
+		if deps.ListBackups == nil {
+			WriteJSON(w, http.StatusOK, []SystemBackup{}, map[string]any{"total": 0})
+			return
+		}
+		backups, err := deps.ListBackups(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "backup_list_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, backups, map[string]any{"total": len(backups)})
+	})
+
+	mux.HandleFunc("POST /api/v1/system/backup", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
+		if deps.CreateBackup == nil {
+			WriteError(w, http.StatusNotImplemented, "backup_unavailable", "backup operation is not configured")
+			return
+		}
+		backup, err := deps.CreateBackup(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "backup_create_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, backup, nil)
+	})
+}
+
+func sanitizeConfigSnapshot(input any) any {
+	if input == nil {
+		return nil
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return input
+	}
+	var data any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return input
+	}
+	maskSecrets(data)
+	return data
+}
+
+func maskSecrets(value any) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for key, item := range typed {
+			keyLower := strings.ToLower(key)
+			if strings.Contains(keyLower, "password") || strings.Contains(keyLower, "secret") || strings.Contains(keyLower, "hash") {
+				if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
+					typed[key] = "***"
+					continue
+				}
+			}
+			maskSecrets(item)
+		}
+	case []any:
+		for _, item := range typed {
+			maskSecrets(item)
+		}
+	}
 }
 
 func registerLeaseRoutes(mux *http.ServeMux, store lease.Store, engine *ipam.Engine, broker *events.Broker, logger *audit.Logger) {

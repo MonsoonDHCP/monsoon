@@ -11,6 +11,8 @@ import type {
   DiscoveryScanResponse,
   DiscoveryStatus,
   HealthResponse,
+  SystemBackup,
+  SystemInfo,
   Lease,
   Reservation,
   Subnet,
@@ -64,6 +66,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchHealth() {
   return request<HealthResponse>("/api/v1/system/health")
+}
+
+export function fetchSystemInfo() {
+  return request<SystemInfo>("/api/v1/system/info")
+}
+
+export function fetchSystemBackups() {
+  return request<SystemBackup[]>("/api/v1/system/backups")
+}
+
+export function createSystemBackup() {
+  return request<SystemBackup>("/api/v1/system/backup", {
+    method: "POST",
+  })
 }
 
 export function fetchLeases() {

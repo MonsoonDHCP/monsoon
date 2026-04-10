@@ -1,4 +1,4 @@
-import { KeyRound, LogIn, LogOut, MoonStar, Palette, Save, Shield, SunMedium, Trash2, UserRound } from "lucide-react"
+import { HardDriveDownload, KeyRound, LogIn, LogOut, MoonStar, Palette, RefreshCw, Save, Server, Shield, SunMedium, Trash2, UserRound } from "lucide-react"
 import { useEffect, useState } from "react"
 import { useTheme } from "next-themes"
 
@@ -10,7 +10,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import type { UISettings } from "@/types/api"
 
 export function SettingsPage() {
-  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin } = useDashboard()
+  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, backups, createBackup, refreshBackups } = useDashboard()
   const { setTheme } = useTheme()
   const [local, setLocal] = useState<UISettings>({
     theme: "system",
@@ -224,6 +224,64 @@ export function SettingsPage() {
               </div>
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Server className="size-4" />
+            System diagnostics
+          </CardTitle>
+          <CardDescription>Runtime and backup controls.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="grid gap-2 text-sm text-muted-foreground md:grid-cols-2">
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              Version: <span className="font-medium text-foreground">{systemInfo?.version ?? "-"}</span>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              Uptime: <span className="font-medium text-foreground">{typeof systemInfo?.uptime_sec === "number" ? `${systemInfo.uptime_sec}s` : "-"}</span>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              Runtime: <span className="font-medium text-foreground">{systemInfo?.runtime?.goos ?? "-"} / {systemInfo?.runtime?.goarch ?? "-"}</span>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              CPUs: <span className="font-medium text-foreground">{systemInfo?.runtime?.num_cpu ?? "-"}</span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => void createBackup()} disabled={!isAdmin || !canMutate}>
+              <HardDriveDownload className="mr-2 size-4" />
+              Create backup
+            </Button>
+            <Button variant="outline" onClick={() => void refreshBackups()}>
+              <RefreshCw className="mr-2 size-4" />
+              Refresh backups
+            </Button>
+            <Button variant="outline" size="sm" asChild>
+              <a href="/api/v1/system/config/export?format=yaml" target="_blank" rel="noreferrer">
+                Export config YAML
+              </a>
+            </Button>
+            <Button variant="outline" size="sm" asChild>
+              <a href="/api/v1/system/config/export?format=json" target="_blank" rel="noreferrer">
+                Export config JSON
+              </a>
+            </Button>
+          </div>
+
+          <div className="space-y-2">
+            {backups.slice(0, 8).map((backup) => (
+              <div key={backup.path} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                <p className="font-mono text-[11px] text-foreground">{backup.name}</p>
+                <p>{backup.created_at} | {(backup.size_bytes / 1024).toFixed(1)} KB</p>
+                <p className="truncate">{backup.path}</p>
+              </div>
+            ))}
+            {backups.length === 0 && <p className="text-sm text-muted-foreground">No backups found yet.</p>}
+          </div>
         </CardContent>
       </Card>
     </div>

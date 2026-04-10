@@ -1,6 +1,8 @@
 export type HealthResponse = {
   status: string
   version: string
+  started_at?: string
+  uptime?: string
   components?: {
     dhcpv4?: {
       enabled?: boolean
@@ -8,6 +10,26 @@ export type HealthResponse = {
       running?: boolean
     }
   }
+}
+
+export type SystemInfo = {
+  version: string
+  started_at?: string
+  now?: string
+  uptime_sec?: number
+  runtime?: {
+    goos?: string
+    goarch?: string
+    gomaxprocs?: number
+    num_cpu?: number
+  }
+}
+
+export type SystemBackup = {
+  name: string
+  path: string
+  size_bytes: number
+  created_at: string
 }
 
 export type Lease = {

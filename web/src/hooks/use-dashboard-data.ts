@@ -17,6 +17,8 @@ import {
   fetchDiscoveryRogueServers,
   fetchDiscoveryStatus,
   fetchHealth,
+  fetchSystemBackups,
+  fetchSystemInfo,
   fetchLeases,
   fetchReservations,
   fetchRawSubnets,
@@ -30,6 +32,7 @@ import {
   updateUISettings,
   upsertReservation,
   upsertSubnet,
+  createSystemBackup,
 } from "@/lib/api"
 import type {
   AuthIdentity,
@@ -46,6 +49,8 @@ import type {
   Reservation,
   Subnet,
   SubnetSummary,
+  SystemBackup,
+  SystemInfo,
   UISettings,
   UpsertReservationPayload,
   UpsertSubnetPayload,
@@ -53,6 +58,8 @@ import type {
 
 type DashboardState = {
   health: HealthResponse | null
+  systemInfo: SystemInfo | null
+  backups: SystemBackup[]
   leases: Lease[]
   subnets: SubnetSummary[]
   subnetRecords: Subnet[]
@@ -88,10 +95,14 @@ type DashboardState = {
   logoutCurrentUser: () => Promise<void>
   createToken: (payload: { name: string; role: string; expires_in_hours?: number; description?: string }) => Promise<void>
   revokeToken: (id: string) => Promise<void>
+  createBackup: () => Promise<void>
+  refreshBackups: () => Promise<void>
 }
 
 export function useDashboardData(): DashboardState {
   const [health, setHealth] = useState<HealthResponse | null>(null)
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
+  const [backups, setBackups] = useState<SystemBackup[]>([])
   const [leases, setLeases] = useState<Lease[]>([])
   const [subnets, setSubnets] = useState<SubnetSummary[]>([])
   const [subnetRecords, setSubnetRecords] = useState<Subnet[]>([])
@@ -118,7 +129,9 @@ export function useDashboardData(): DashboardState {
       const healthData = await fetchHealth()
       setHealth(healthData)
 
-      const [leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
+      const [systemInfoData, backupsData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
+        fetchSystemInfo(),
+        fetchSystemBackups(),
         fetchLeases(),
         fetchSubnets(),
         fetchRawSubnets(),
@@ -133,6 +146,8 @@ export function useDashboardData(): DashboardState {
         fetchAuditEntries({ limit: 200 }),
       ])
       setLeases(leaseData)
+      setSystemInfo(systemInfoData)
+      setBackups(backupsData)
       setSubnets(subnetData)
       setSubnetRecords(subnetRawData)
       setAddresses(addressData)
@@ -165,6 +180,8 @@ export function useDashboardData(): DashboardState {
         setCurrentUser(null)
         setAuthTokens([])
         setLeases([])
+        setSystemInfo(null)
+        setBackups([])
         setSubnets([])
         setSubnetRecords([])
         setAddresses([])
@@ -307,6 +324,16 @@ export function useDashboardData(): DashboardState {
     [load],
   )
 
+  const refreshBackups = useCallback(async () => {
+    const rows = await fetchSystemBackups()
+    setBackups(rows)
+  }, [])
+
+  const createBackup = useCallback(async () => {
+    await createSystemBackup()
+    await refreshBackups()
+  }, [refreshBackups])
+
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null
     void load()
@@ -359,6 +386,8 @@ export function useDashboardData(): DashboardState {
 
       return {
         health,
+        systemInfo,
+        backups,
         leases,
         subnets,
         subnetRecords,
@@ -394,10 +423,14 @@ export function useDashboardData(): DashboardState {
         logoutCurrentUser,
         createToken,
         revokeToken,
+        createBackup,
+        refreshBackups,
       }
     },
     [
       health,
+      systemInfo,
+      backups,
       leases,
       subnets,
       subnetRecords,
@@ -431,6 +464,8 @@ export function useDashboardData(): DashboardState {
       logoutCurrentUser,
       createToken,
       revokeToken,
+      createBackup,
+      refreshBackups,
     ],
   )
 }

@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -37,6 +38,8 @@ func main() {
 }
 
 func run() int {
+	startedAt := time.Now().UTC()
+
 	var (
 		configPath   string
 		dataDirFlag  string
@@ -288,6 +291,99 @@ func run() int {
 		},
 		UISettings:  uiSettingsStore,
 		EventBroker: eventBroker,
+		StartedAt:   startedAt,
+		ConfigSnapshot: func() any {
+			snapshot := cfgManager.Get()
+			if dataDirFlag != "" {
+				snapshot.Server.DataDir = dataDirFlag
+			}
+			return snapshot
+		},
+		CreateBackup: func(_ context.Context) (rest.SystemBackup, error) {
+			snapshot := cfgManager.Get()
+			if dataDirFlag != "" {
+				snapshot.Server.DataDir = dataDirFlag
+			}
+
+			if err := eng.CreateSnapshot(); err != nil {
+				return rest.SystemBackup{}, err
+			}
+			backupDir := snapshot.Backup.Auto.Path
+			if strings.TrimSpace(backupDir) == "" {
+				backupDir = filepath.Join(snapshot.Server.DataDir, "backups")
+			}
+			if err := os.MkdirAll(backupDir, 0o755); err != nil {
+				return rest.SystemBackup{}, err
+			}
+
+			now := time.Now().UTC()
+			name := fmt.Sprintf("monsoon-%s.snapshot", now.Format("20060102-150405"))
+			src := filepath.Join(snapshot.Server.DataDir, "storage", "snapshot.bin")
+			dst := filepath.Join(backupDir, name)
+
+			body, err := os.ReadFile(src)
+			if err != nil {
+				return rest.SystemBackup{}, err
+			}
+			if err := os.WriteFile(dst, body, 0o600); err != nil {
+				return rest.SystemBackup{}, err
+			}
+			abs, _ := filepath.Abs(dst)
+			if abs != "" {
+				dst = abs
+			}
+			return rest.SystemBackup{
+				Name:      name,
+				Path:      dst,
+				SizeBytes: int64(len(body)),
+				CreatedAt: now,
+			}, nil
+		},
+		ListBackups: func(ctx context.Context) ([]rest.SystemBackup, error) {
+			snapshot := cfgManager.Get()
+			if dataDirFlag != "" {
+				snapshot.Server.DataDir = dataDirFlag
+			}
+			backupDir := snapshot.Backup.Auto.Path
+			if strings.TrimSpace(backupDir) == "" {
+				backupDir = filepath.Join(snapshot.Server.DataDir, "backups")
+			}
+			entries, err := os.ReadDir(backupDir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					return []rest.SystemBackup{}, nil
+				}
+				return nil, err
+			}
+			out := make([]rest.SystemBackup, 0, len(entries))
+			for _, entry := range entries {
+				if ctx.Err() != nil {
+					return nil, ctx.Err()
+				}
+				if entry.IsDir() {
+					continue
+				}
+				info, infoErr := entry.Info()
+				if infoErr != nil {
+					continue
+				}
+				path := filepath.Join(backupDir, entry.Name())
+				abs, _ := filepath.Abs(path)
+				if abs != "" {
+					path = abs
+				}
+				out = append(out, rest.SystemBackup{
+					Name:      entry.Name(),
+					Path:      path,
+					SizeBytes: info.Size(),
+					CreatedAt: info.ModTime().UTC(),
+				})
+			}
+			sort.Slice(out, func(i, j int) bool {
+				return out[i].CreatedAt.After(out[j].CreatedAt)
+			})
+			return out, nil
+		},
 		DHCPv4Running: func() bool {
 			if dhcpServer != nil {
 				return dhcpServer.Running()

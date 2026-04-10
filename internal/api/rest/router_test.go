@@ -346,3 +346,80 @@ func TestDiscoveryRoutes(t *testing.T) {
 		t.Fatalf("scan code mismatch: %d", scanRR.Code)
 	}
 }
+
+func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
+	mux := http.NewServeMux()
+	startedAt := time.Now().UTC().Add(-5 * time.Minute)
+	if err := RegisterRoutes(mux, RouterDeps{
+		Version:   "test",
+		StartedAt: startedAt,
+		ConfigSnapshot: func() any {
+			return map[string]any{
+				"auth": map[string]any{
+					"enabled":  true,
+					"password": "top-secret",
+					"token":    "visible-value",
+				},
+			}
+		},
+		CreateBackup: func(context.Context) (SystemBackup, error) {
+			return SystemBackup{
+				Name:      "monsoon-test.snapshot",
+				Path:      "/tmp/monsoon-test.snapshot",
+				SizeBytes: 321,
+				CreatedAt: time.Now().UTC(),
+			}, nil
+		},
+		ListBackups: func(context.Context) ([]SystemBackup, error) {
+			return []SystemBackup{{
+				Name:      "monsoon-existing.snapshot",
+				Path:      "/tmp/monsoon-existing.snapshot",
+				SizeBytes: 654,
+				CreatedAt: time.Now().UTC(),
+			}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register routes failed: %v", err)
+	}
+
+	infoRR := httptest.NewRecorder()
+	infoReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/info", nil)
+	mux.ServeHTTP(infoRR, infoReq)
+	if infoRR.Code != http.StatusOK {
+		t.Fatalf("system info status mismatch: got %d body=%s", infoRR.Code, infoRR.Body.String())
+	}
+
+	configRR := httptest.NewRecorder()
+	configReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/config", nil)
+	mux.ServeHTTP(configRR, configReq)
+	if configRR.Code != http.StatusOK {
+		t.Fatalf("system config status mismatch: got %d body=%s", configRR.Code, configRR.Body.String())
+	}
+	if !bytes.Contains(configRR.Body.Bytes(), []byte(`"password":"***"`)) {
+		t.Fatalf("expected masked password in config response: %s", configRR.Body.String())
+	}
+
+	exportRR := httptest.NewRecorder()
+	exportReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/config/export?format=yaml", nil)
+	mux.ServeHTTP(exportRR, exportReq)
+	if exportRR.Code != http.StatusOK {
+		t.Fatalf("system config export status mismatch: got %d body=%s", exportRR.Code, exportRR.Body.String())
+	}
+	if exportRR.Body.Len() == 0 {
+		t.Fatalf("expected export body")
+	}
+
+	listRR := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/system/backups", nil)
+	mux.ServeHTTP(listRR, listReq)
+	if listRR.Code != http.StatusOK {
+		t.Fatalf("system backups list status mismatch: got %d body=%s", listRR.Code, listRR.Body.String())
+	}
+
+	createRR := httptest.NewRecorder()
+	createReq := httptest.NewRequest(http.MethodPost, "/api/v1/system/backup", nil)
+	mux.ServeHTTP(createRR, createReq)
+	if createRR.Code != http.StatusOK {
+		t.Fatalf("system backup create status mismatch: got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+}

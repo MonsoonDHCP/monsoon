@@ -2,6 +2,9 @@ package migrate
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -302,6 +305,99 @@ lease 10.0.40.71 {
 
 	if _, err := leaseStore.GetByIP(ctx, "10.0.40.71"); err == nil {
 		t.Fatalf("expected free lease not to be imported")
+	}
+}
+
+func TestRunnerNetBoxImport(t *testing.T) {
+	t.Parallel()
+
+	runner, ipamEngine, _ := newTestRunner(t)
+	ctx := context.Background()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Token secret-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/api/ipam/prefixes/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"count": 1,
+				"next":  nil,
+				"results": []map[string]any{
+					{
+						"prefix":      "10.0.50.0/24",
+						"description": "NetBox Prefix",
+						"status":      map[string]any{"value": "active", "label": "Active"},
+						"vlan":        map[string]any{"vid": 50, "name": "VLAN50"},
+					},
+				},
+			})
+		case "/api/ipam/ip-addresses/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"count": 2,
+				"next":  nil,
+				"results": []map[string]any{
+					{
+						"address":     "10.0.50.10/24",
+						"dns_name":    "srv-50.local",
+						"description": "Core server",
+						"status":      map[string]any{"value": "active", "label": "Active"},
+					},
+					{
+						"address":     "10.0.50.20/24",
+						"dns_name":    "",
+						"description": "Old server",
+						"status":      map[string]any{"value": "deprecated", "label": "Deprecated"},
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	report, err := runner.Run(ctx, Options{
+		Source:   SourceNetBox,
+		APIURL:   server.URL,
+		APIToken: "secret-token",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("expected 2 file reports, got %d", len(report.Files))
+	}
+
+	subnet, err := ipamEngine.GetSubnet(ctx, "10.0.50.0/24")
+	if err != nil {
+		t.Fatalf("GetSubnet() error = %v", err)
+	}
+	if subnet.Name != "NetBox Prefix" {
+		t.Fatalf("unexpected subnet name %q", subnet.Name)
+	}
+	if subnet.VLAN != 50 {
+		t.Fatalf("unexpected vlan %d", subnet.VLAN)
+	}
+
+	addressA, err := ipamEngine.GetStoredAddress(ctx, "10.0.50.10")
+	if err != nil {
+		t.Fatalf("GetStoredAddress(10.0.50.10) error = %v", err)
+	}
+	if addressA.State != ipam.IPStateReserved {
+		t.Fatalf("unexpected addressA state %q", addressA.State)
+	}
+	if addressA.Hostname != "srv-50.local" {
+		t.Fatalf("unexpected addressA hostname %q", addressA.Hostname)
+	}
+
+	addressB, err := ipamEngine.GetStoredAddress(ctx, "10.0.50.20")
+	if err != nil {
+		t.Fatalf("GetStoredAddress(10.0.50.20) error = %v", err)
+	}
+	if addressB.State != ipam.IPStateQuarantined {
+		t.Fatalf("unexpected addressB state %q", addressB.State)
 	}
 }
 

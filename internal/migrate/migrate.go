@@ -15,6 +15,7 @@ const (
 	SourceCSV     = "csv"
 	SourceISCDHCP = "isc-dhcp"
 	SourceKea     = "kea"
+	SourceNetBox  = "netbox"
 
 	ConflictOverwrite = "overwrite"
 	ConflictSkip      = "skip"
@@ -32,6 +33,8 @@ type Options struct {
 	DryRun         bool
 	ConflictPolicy string
 	SourceConfig   string
+	APIURL         string
+	APIToken       string
 	CSV            CSVOptions
 }
 
@@ -80,6 +83,9 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Report, error) {
 	if source == "" && strings.TrimSpace(opts.SourceConfig) != "" {
 		source = SourceKea
 	}
+	if source == "" && strings.TrimSpace(opts.APIURL) != "" {
+		source = SourceNetBox
+	}
 	report := Report{
 		Source:    source,
 		DryRun:    opts.DryRun,
@@ -121,6 +127,18 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Report, error) {
 		iscReport, err := r.runISCDHCP(ctx, opts.SourceConfig, opts.CSV.LeasesPath, opts.DryRun, policy)
 		report.Files = iscReport.Files
 		report.Warnings = append(report.Warnings, iscReport.Warnings...)
+		report.CompletedAt = time.Now().UTC()
+		if err != nil {
+			return report, err
+		}
+		if hasRowErrors(report.Files) {
+			return report, fmt.Errorf("migration completed with %d row errors", countRowErrors(report.Files))
+		}
+		return report, nil
+	case SourceNetBox:
+		netboxReport, err := r.runNetBox(ctx, opts.APIURL, opts.APIToken, opts.DryRun, policy)
+		report.Files = netboxReport.Files
+		report.Warnings = append(report.Warnings, netboxReport.Warnings...)
 		report.CompletedAt = time.Now().UTC()
 		if err != nil {
 			return report, err

@@ -43,25 +43,27 @@ func run() int {
 	startedAt := time.Now().UTC()
 
 	var (
-		configPath    string
-		dataDirFlag   string
-		webDistDir    string
-		showVersion   bool
-		initConfig    bool
-		checkConfig   bool
-		exportConfig  bool
-		doBackup      bool
-		restoreFrom   string
-		doMigrate     bool
-		migrateFrom   string
-		migrateDry    bool
-		migrateMode   string
-		migrateSrcCfg string
-		migrateSub    string
-		migrateAddr   string
-		migrateRes    string
-		migrateLease  string
-		debug         bool
+		configPath      string
+		dataDirFlag     string
+		webDistDir      string
+		showVersion     bool
+		initConfig      bool
+		checkConfig     bool
+		exportConfig    bool
+		doBackup        bool
+		restoreFrom     string
+		doMigrate       bool
+		migrateFrom     string
+		migrateDry      bool
+		migrateMode     string
+		migrateSrcCfg   string
+		migrateAPIURL   string
+		migrateAPIToken string
+		migrateSub      string
+		migrateAddr     string
+		migrateRes      string
+		migrateLease    string
+		debug           bool
 	)
 
 	flag.StringVar(&configPath, "config", "/etc/monsoon/monsoon.yaml", "Configuration file path")
@@ -76,10 +78,12 @@ func run() int {
 	flag.BoolVar(&doBackup, "backup", false, "Create backup snapshot and exit")
 	flag.StringVar(&restoreFrom, "restore", "", "Restore snapshot file")
 	flag.BoolVar(&doMigrate, "migrate", false, "Run migrations and exit")
-	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, isc-dhcp, kea)")
+	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, isc-dhcp, kea, netbox)")
 	flag.BoolVar(&migrateDry, "dry-run", false, "Validate migration inputs without writing")
 	flag.StringVar(&migrateMode, "conflict-policy", migrate.ConflictOverwrite, "Conflict policy (overwrite|skip)")
 	flag.StringVar(&migrateSrcCfg, "source-config", "", "Source configuration file for migration adapters such as Kea")
+	flag.StringVar(&migrateAPIURL, "api-url", "", "Source API base URL for migration adapters such as NetBox")
+	flag.StringVar(&migrateAPIToken, "api-token", "", "Source API token for migration adapters")
 	flag.StringVar(&migrateSub, "subnets", "", "CSV file containing subnet records")
 	flag.StringVar(&migrateAddr, "addresses", "", "CSV file containing address records")
 	flag.StringVar(&migrateRes, "reservations", "", "CSV file containing reservation records")
@@ -225,6 +229,8 @@ func run() int {
 			DryRun:         migrateDry,
 			ConflictPolicy: migrateMode,
 			SourceConfig:   migrateSrcCfg,
+			APIURL:         migrateAPIURL,
+			APIToken:       migrateAPIToken,
 			CSV: migrate.CSVOptions{
 				SubnetsPath:      migrateSub,
 				AddressesPath:    migrateAddr,

@@ -208,7 +208,7 @@
 - [x] #112 — Create `web/assets/logo.svg` + `web/assets/favicon.ico`: Monsoon logo SVG, favicon
 
 ### Rapid Commit
-- [ ] #113 — Implement `internal/dhcpv4/rapid_commit.go`: RFC 4039 — two-message exchange (DISCOVER with Rapid Commit option → immediate ACK, skip OFFER/REQUEST) for fast lease acquisition
+- [x] #113 — Implement `internal/dhcpv4/rapid_commit.go`: RFC 4039 — two-message exchange (DISCOVER with Rapid Commit option → immediate ACK, skip OFFER/REQUEST) for fast lease acquisition
 
 ---
 

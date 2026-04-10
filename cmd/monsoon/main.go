@@ -76,7 +76,7 @@ func run() int {
 	flag.BoolVar(&doBackup, "backup", false, "Create backup snapshot and exit")
 	flag.StringVar(&restoreFrom, "restore", "", "Restore snapshot file")
 	flag.BoolVar(&doMigrate, "migrate", false, "Run migrations and exit")
-	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, kea)")
+	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, isc-dhcp, kea)")
 	flag.BoolVar(&migrateDry, "dry-run", false, "Validate migration inputs without writing")
 	flag.StringVar(&migrateMode, "conflict-policy", migrate.ConflictOverwrite, "Conflict policy (overwrite|skip)")
 	flag.StringVar(&migrateSrcCfg, "source-config", "", "Source configuration file for migration adapters such as Kea")
@@ -87,7 +87,16 @@ func run() int {
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
 	originalArgs := append([]string(nil), os.Args...)
 	if len(os.Args) > 1 && os.Args[1] == "migrate" {
-		os.Args = append([]string{os.Args[0], "--migrate"}, os.Args[2:]...)
+		rewritten := append([]string{os.Args[0], "--migrate"}, os.Args[2:]...)
+		for idx := 2; idx < len(rewritten); idx++ {
+			switch {
+			case rewritten[idx] == "--config" || rewritten[idx] == "-c":
+				rewritten[idx] = "--source-config"
+			case strings.HasPrefix(rewritten[idx], "--config="):
+				rewritten[idx] = "--source-config=" + strings.TrimPrefix(rewritten[idx], "--config=")
+			}
+		}
+		os.Args = rewritten
 		defer func() {
 			os.Args = originalArgs
 		}()

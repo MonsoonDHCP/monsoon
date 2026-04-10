@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	SourceCSV = "csv"
-	SourceKea = "kea"
+	SourceCSV     = "csv"
+	SourceISCDHCP = "isc-dhcp"
+	SourceKea     = "kea"
 
 	ConflictOverwrite = "overwrite"
 	ConflictSkip      = "skip"
@@ -108,6 +109,18 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Report, error) {
 		csvReport, err := r.runCSV(ctx, opts.CSV, opts.DryRun, policy)
 		report.Files = csvReport.Files
 		report.Warnings = append(report.Warnings, csvReport.Warnings...)
+		report.CompletedAt = time.Now().UTC()
+		if err != nil {
+			return report, err
+		}
+		if hasRowErrors(report.Files) {
+			return report, fmt.Errorf("migration completed with %d row errors", countRowErrors(report.Files))
+		}
+		return report, nil
+	case SourceISCDHCP:
+		iscReport, err := r.runISCDHCP(ctx, opts.SourceConfig, opts.CSV.LeasesPath, opts.DryRun, policy)
+		report.Files = iscReport.Files
+		report.Warnings = append(report.Warnings, iscReport.Warnings...)
 		report.CompletedAt = time.Now().UTC()
 		if err != nil {
 			return report, err

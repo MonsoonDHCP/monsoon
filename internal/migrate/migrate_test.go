@@ -202,6 +202,109 @@ func TestRunnerKeaImport(t *testing.T) {
 	}
 }
 
+func TestRunnerISCDHCPImport(t *testing.T) {
+	t.Parallel()
+
+	runner, ipamEngine, leaseStore := newTestRunner(t)
+	ctx := context.Background()
+
+	iscConfig := writeCSV(t, "dhcpd.conf", `
+default-lease-time 3600;
+
+subnet 10.0.40.0 netmask 255.255.255.0 {
+  option routers 10.0.40.1;
+  option domain-name-servers 9.9.9.9, 1.1.1.1;
+  range 10.0.40.10 10.0.40.100;
+
+  host printer40 {
+    hardware ethernet AA:BB:CC:40:00:01;
+    fixed-address 10.0.40.50;
+    option host-name "printer-40";
+  }
+}
+
+host camera40 {
+  hardware ethernet AA:BB:CC:40:00:02;
+  fixed-address 10.0.40.60;
+  option host-name "camera-40";
+}
+`)
+	iscLeases := writeCSV(t, "dhcpd.leases", `
+lease 10.0.40.70 {
+  starts 5 2026/04/10 10:00:00;
+  ends 5 2026/04/10 11:00:00;
+  cltt 5 2026/04/10 10:00:00;
+  binding state active;
+  hardware ethernet AA:BB:CC:40:00:03;
+  client-hostname "laptop-40";
+}
+
+lease 10.0.40.71 {
+  starts 5 2026/04/10 08:00:00;
+  ends 5 2026/04/10 09:00:00;
+  binding state free;
+  hardware ethernet AA:BB:CC:40:00:04;
+  client-hostname "old-host";
+}
+`)
+
+	report, err := runner.Run(ctx, Options{
+		Source:       SourceISCDHCP,
+		SourceConfig: iscConfig,
+		CSV: CSVOptions{
+			LeasesPath: iscLeases,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("expected 2 file reports, got %d", len(report.Files))
+	}
+
+	subnet, err := ipamEngine.GetSubnet(ctx, "10.0.40.0/24")
+	if err != nil {
+		t.Fatalf("GetSubnet() error = %v", err)
+	}
+	if subnet.Gateway != "10.0.40.1" {
+		t.Fatalf("unexpected gateway %q", subnet.Gateway)
+	}
+	if subnet.DHCP.PoolStart != "10.0.40.10" || subnet.DHCP.PoolEnd != "10.0.40.100" {
+		t.Fatalf("unexpected pool %s-%s", subnet.DHCP.PoolStart, subnet.DHCP.PoolEnd)
+	}
+
+	resA, err := ipamEngine.GetReservationByMAC(ctx, "AA:BB:CC:40:00:01")
+	if err != nil {
+		t.Fatalf("GetReservationByMAC(printer) error = %v", err)
+	}
+	if resA.IP != "10.0.40.50" {
+		t.Fatalf("unexpected reservation A ip %q", resA.IP)
+	}
+
+	resB, err := ipamEngine.GetReservationByMAC(ctx, "AA:BB:CC:40:00:02")
+	if err != nil {
+		t.Fatalf("GetReservationByMAC(camera) error = %v", err)
+	}
+	if resB.IP != "10.0.40.60" {
+		t.Fatalf("unexpected reservation B ip %q", resB.IP)
+	}
+
+	leaseRecord, err := leaseStore.GetByIP(ctx, "10.0.40.70")
+	if err != nil {
+		t.Fatalf("GetByIP() error = %v", err)
+	}
+	if leaseRecord.State != lease.StateBound {
+		t.Fatalf("unexpected lease state %q", leaseRecord.State)
+	}
+	if leaseRecord.Hostname != "laptop-40" {
+		t.Fatalf("unexpected lease hostname %q", leaseRecord.Hostname)
+	}
+
+	if _, err := leaseStore.GetByIP(ctx, "10.0.40.71"); err == nil {
+		t.Fatalf("expected free lease not to be imported")
+	}
+}
+
 func newTestRunner(t *testing.T) (*Runner, *ipam.Engine, lease.Store) {
 	t.Helper()
 

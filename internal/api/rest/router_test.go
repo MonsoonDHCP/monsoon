@@ -141,6 +141,29 @@ func TestDashboardStaticFallback(t *testing.T) {
 	}
 }
 
+func TestDashboardEmbeddedFallback(t *testing.T) {
+	mux := http.NewServeMux()
+	if err := RegisterRoutes(mux, RouterDeps{
+		Version: "test",
+		Dashboard: DashboardConfig{
+			Enabled: true,
+			DistDir: filepath.Join(t.TempDir(), "missing-dist"),
+		},
+	}); err != nil {
+		t.Fatalf("register routes failed: %v", err)
+	}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status mismatch: got %d want %d", rr.Code, http.StatusOK)
+	}
+	if rr.Body.Len() == 0 {
+		t.Fatalf("expected embedded html body")
+	}
+}
+
 func TestReservationAndAddressRoutes(t *testing.T) {
 	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{"subnets", "reservations", "leases"})
 	if err != nil {

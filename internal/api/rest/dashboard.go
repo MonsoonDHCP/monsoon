@@ -2,17 +2,18 @@ package rest
 
 import (
 	"fmt"
+	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/monsoondhcp/monsoon/internal/dashboard"
 )
 
 func NewSPADashboardHandler(distDir, basePath string, metricsPath string) (http.Handler, error) {
-	if strings.TrimSpace(distDir) == "" {
-		return nil, fmt.Errorf("dashboard dist directory is empty")
-	}
 	if strings.TrimSpace(basePath) == "" {
 		basePath = "/"
 	}
@@ -21,11 +22,10 @@ func NewSPADashboardHandler(distDir, basePath string, metricsPath string) (http.
 	}
 	basePath = path.Clean(basePath)
 
-	indexPath := filepath.Join(distDir, "index.html")
-	if _, err := os.Stat(indexPath); err != nil {
-		return nil, fmt.Errorf("dashboard index not found at %s: %w", indexPath, err)
+	staticHandler, openFile, err := resolveDashboardSource(distDir)
+	if err != nil {
+		return nil, err
 	}
-	fs := http.FileServer(http.Dir(distDir))
 
 	normalizedMetrics := metricsPath
 	if normalizedMetrics == "" {
@@ -56,14 +56,69 @@ func NewSPADashboardHandler(distDir, basePath string, metricsPath string) (http.
 		}
 
 		cleanPath := path.Clean("/" + strings.TrimPrefix(requestPath, "/"))
-		candidate := filepath.Join(distDir, filepath.FromSlash(strings.TrimPrefix(cleanPath, "/")))
-		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+		if ok, err := assetExists(openFile, cleanPath); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		} else if ok {
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = cleanPath
-			fs.ServeHTTP(w, r2)
+			staticHandler.ServeHTTP(w, r2)
 			return
 		}
 
-		http.ServeFile(w, r, indexPath)
+		indexBody, err := openFile("/index.html")
+		if err != nil {
+			http.Error(w, "dashboard index not found", http.StatusInternalServerError)
+			return
+		}
+		defer indexBody.Close()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		_, _ = io.Copy(w, indexBody)
 	}), nil
+}
+
+func resolveDashboardSource(distDir string) (http.Handler, func(string) (fs.File, error), error) {
+	if strings.TrimSpace(distDir) != "" {
+		indexPath := filepath.Join(distDir, "index.html")
+		if _, err := os.Stat(indexPath); err == nil {
+			dirFS := os.DirFS(distDir)
+			return http.FileServer(http.Dir(distDir)), func(name string) (fs.File, error) {
+				return dirFS.Open(strings.TrimPrefix(name, "/"))
+			}, nil
+		}
+	}
+
+	embeddedFS, err := dashboard.FS()
+	if err != nil {
+		return nil, nil, fmt.Errorf("embedded dashboard unavailable: %w", err)
+	}
+	if _, err := embeddedFS.Open("index.html"); err != nil {
+		return nil, nil, fmt.Errorf("embedded dashboard index not found: %w", err)
+	}
+	return http.FileServer(http.FS(embeddedFS)), func(name string) (fs.File, error) {
+		return embeddedFS.Open(strings.TrimPrefix(name, "/"))
+	}, nil
+}
+
+func assetExists(openFile func(string) (fs.File, error), cleanPath string) (bool, error) {
+	if cleanPath == "/" {
+		return false, nil
+	}
+	file, err := openFile(cleanPath)
+	if err != nil {
+		if os.IsNotExist(err) || err == fs.ErrNotExist {
+			return false, nil
+		}
+		return false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	return !info.IsDir(), nil
 }

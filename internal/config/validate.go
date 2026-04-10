@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"net/url"
 	"slices"
 	"strings"
 )
@@ -43,6 +44,32 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.API.REST.RateLimit <= 0 {
 		errs = append(errs, "api.rest.rate_limit must be > 0")
+	}
+	for idx, hook := range cfg.Webhooks {
+		if strings.TrimSpace(hook.Name) == "" {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].name is required", idx))
+		}
+		if strings.TrimSpace(hook.URL) == "" {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].url is required", idx))
+		} else if parsed, err := url.Parse(strings.TrimSpace(hook.URL)); err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].url is invalid", idx))
+		}
+		format := strings.ToLower(strings.TrimSpace(hook.Format))
+		if format == "" {
+			format = "json"
+		}
+		if !slices.Contains([]string{"json", "slack"}, format) {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].format must be json or slack", idx))
+		}
+		if len(hook.Events) == 0 {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].events must not be empty", idx))
+		}
+		if hook.Retry.MaxAttempts < 0 {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].retry.max_attempts must be >= 0", idx))
+		}
+		if backoff := strings.TrimSpace(strings.ToLower(hook.Retry.Backoff)); backoff != "" && backoff != "exponential" && backoff != "fixed" {
+			errs = append(errs, fmt.Sprintf("webhooks[%d].retry.backoff must be exponential or fixed", idx))
+		}
 	}
 
 	if cfg.Auth.Enabled && strings.TrimSpace(cfg.Auth.Type) == "" {

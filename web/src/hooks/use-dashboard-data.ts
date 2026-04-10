@@ -36,6 +36,7 @@ import {
   upsertSubnet,
   createSystemBackup,
 } from "@/lib/api"
+import { connectLiveSocket, type LiveEvent } from "@/lib/ws"
 import type {
   AuthIdentity,
   AuthToken,
@@ -380,6 +381,13 @@ export function useDashboardData(): DashboardState {
     })
   }, [])
 
+  const handleLiveEvent = useCallback(
+    (event: LiveEvent) => {
+      pushNotification(event.type, event.data)
+    },
+    [pushNotification],
+  )
+
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null
     void load()
@@ -399,55 +407,109 @@ export function useDashboardData(): DashboardState {
     if (authRequired) {
       return
     }
-    const source = new EventSource("/api/v1/events")
-    const parsePayload = (evt: Event): Record<string, unknown> => {
-      try {
-        const raw = (evt as MessageEvent).data
-        if (typeof raw !== "string" || !raw.trim()) {
+    let reloadTimer: ReturnType<typeof setTimeout> | null = null
+    let fallbackSource: EventSource | null = null
+    let fallbackActivated = false
+
+    const scheduleReload = () => {
+      if (reloadTimer) {
+        clearTimeout(reloadTimer)
+      }
+      reloadTimer = setTimeout(() => {
+        reloadTimer = null
+        void load()
+      }, 300)
+    }
+
+    const activateSSEFallback = () => {
+      if (fallbackActivated) {
+        return
+      }
+      fallbackActivated = true
+      fallbackSource = new EventSource("/api/v1/events")
+      const parsePayload = (evt: Event): Record<string, unknown> => {
+        try {
+          const raw = (evt as MessageEvent).data
+          if (typeof raw !== "string" || !raw.trim()) {
+            return {}
+          }
+          const decoded = JSON.parse(raw) as { data?: Record<string, unknown> }
+          return decoded?.data ?? {}
+        } catch {
           return {}
         }
-        const decoded = JSON.parse(raw) as { data?: Record<string, unknown> }
-        return decoded?.data ?? {}
-      } catch {
-        return {}
       }
-    }
-    const makeHandler = (eventType: string) => {
-      return (evt: Event) => {
-        pushNotification(eventType, parsePayload(evt))
-        void load()
+      const makeHandler = (eventType: string) => {
+        return (evt: Event) => {
+          handleLiveEvent({ type: eventType, data: parsePayload(evt) })
+          scheduleReload()
+        }
       }
+
+      const handlers = {
+        leaseReleased: makeHandler("lease.released"),
+        leaseCreated: makeHandler("lease.created"),
+        leaseRenewed: makeHandler("lease.renewed"),
+        leaseExpired: makeHandler("lease.expired"),
+        subnetUpserted: makeHandler("subnet.upserted"),
+        subnetCreated: makeHandler("subnet.created"),
+        subnetDeleted: makeHandler("subnet.deleted"),
+        reservationUpserted: makeHandler("reservation.upserted"),
+        reservationDeleted: makeHandler("reservation.deleted"),
+        addressReserved: makeHandler("address.reserved"),
+        discoveryQueued: makeHandler("discovery.scan_queued"),
+        discoveryStarted: makeHandler("discovery.started"),
+        discoveryCompleted: makeHandler("discovery.scan_completed"),
+        discoveryConflict: makeHandler("discovery.conflict"),
+        settingsUpdated: makeHandler("settings.ui_updated"),
+      }
+
+      fallbackSource.addEventListener("lease.released", handlers.leaseReleased)
+      fallbackSource.addEventListener("lease.created", handlers.leaseCreated)
+      fallbackSource.addEventListener("lease.renewed", handlers.leaseRenewed)
+      fallbackSource.addEventListener("lease.expired", handlers.leaseExpired)
+      fallbackSource.addEventListener("subnet.upserted", handlers.subnetUpserted)
+      fallbackSource.addEventListener("subnet.created", handlers.subnetCreated)
+      fallbackSource.addEventListener("subnet.deleted", handlers.subnetDeleted)
+      fallbackSource.addEventListener("reservation.upserted", handlers.reservationUpserted)
+      fallbackSource.addEventListener("reservation.deleted", handlers.reservationDeleted)
+      fallbackSource.addEventListener("address.reserved", handlers.addressReserved)
+      fallbackSource.addEventListener("discovery.scan_queued", handlers.discoveryQueued)
+      fallbackSource.addEventListener("discovery.started", handlers.discoveryStarted)
+      fallbackSource.addEventListener("discovery.scan_completed", handlers.discoveryCompleted)
+      fallbackSource.addEventListener("discovery.conflict", handlers.discoveryConflict)
+      fallbackSource.addEventListener("settings.ui_updated", handlers.settingsUpdated)
     }
 
-    const leaseReleased = makeHandler("lease.released")
-    const subnetUpserted = makeHandler("subnet.upserted")
-    const subnetDeleted = makeHandler("subnet.deleted")
-    const reservationUpserted = makeHandler("reservation.upserted")
-    const reservationDeleted = makeHandler("reservation.deleted")
-    const discoveryQueued = makeHandler("discovery.scan_queued")
-    const discoveryCompleted = makeHandler("discovery.scan_completed")
-    const settingsUpdated = makeHandler("settings.ui_updated")
+    let opened = false
+    const socket = connectLiveSocket({
+      onOpen: () => {
+        opened = true
+      },
+      onClose: () => {
+        if (!opened) {
+          activateSSEFallback()
+        }
+      },
+      onError: () => {
+        if (!opened) {
+          activateSSEFallback()
+        }
+      },
+      onEvent: (event) => {
+        handleLiveEvent(event)
+        scheduleReload()
+      },
+    })
 
-    source.addEventListener("lease.released", leaseReleased)
-    source.addEventListener("subnet.upserted", subnetUpserted)
-    source.addEventListener("subnet.deleted", subnetDeleted)
-    source.addEventListener("reservation.upserted", reservationUpserted)
-    source.addEventListener("reservation.deleted", reservationDeleted)
-    source.addEventListener("discovery.scan_queued", discoveryQueued)
-    source.addEventListener("discovery.scan_completed", discoveryCompleted)
-    source.addEventListener("settings.ui_updated", settingsUpdated)
     return () => {
-      source.removeEventListener("lease.released", leaseReleased)
-      source.removeEventListener("subnet.upserted", subnetUpserted)
-      source.removeEventListener("subnet.deleted", subnetDeleted)
-      source.removeEventListener("reservation.upserted", reservationUpserted)
-      source.removeEventListener("reservation.deleted", reservationDeleted)
-      source.removeEventListener("discovery.scan_queued", discoveryQueued)
-      source.removeEventListener("discovery.scan_completed", discoveryCompleted)
-      source.removeEventListener("settings.ui_updated", settingsUpdated)
-      source.close()
+      socket.close()
+      fallbackSource?.close()
+      if (reloadTimer) {
+        clearTimeout(reloadTimer)
+      }
     }
-  }, [authRequired, load, pushNotification])
+  }, [authRequired, handleLiveEvent, load])
 
   return useMemo(
     () => {

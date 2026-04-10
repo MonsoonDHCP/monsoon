@@ -200,12 +200,12 @@
 - [x] #108 — Implement `internal/api/mcp/tools.go` + `internal/api/mcp/handlers.go`: All 15 MCP tools per SPECIFICATION §6.4 — rich descriptions for AI consumption, input validation, response formatting
 
 ### Webhooks
-- [ ] #109 — Implement `internal/webhook/dispatcher.go`: Event dispatcher — subscribe to internal events, filter by configured event types per webhook, queue for delivery
-- [ ] #110 — Implement `internal/webhook/delivery.go`: HTTP delivery — POST with JSON/Slack payload format, exponential backoff retry (max 3 attempts), timeout handling, delivery status tracking
+- [x] #109 — Implement `internal/webhook/dispatcher.go`: Event dispatcher — subscribe to internal events, filter by configured event types per webhook, queue for delivery
+- [x] #110 — Implement `internal/webhook/delivery.go`: HTTP delivery — POST with JSON/Slack payload format, exponential backoff retry (max 3 attempts), timeout handling, delivery status tracking
 
 ### Dashboard Embed
-- [ ] #111 — Implement `internal/dashboard/embed.go`: `go:embed web/*` directive — embed all dashboard assets into binary, serve via `http.FileServer` with proper MIME types, gzip compression for JS/CSS
-- [ ] #112 — Create `web/assets/logo.svg` + `web/assets/favicon.ico`: Monsoon logo SVG, favicon
+- [x] #111 — Implement `internal/dashboard/embed.go`: `go:embed web/*` directive — embed all dashboard assets into binary, serve via `http.FileServer` with proper MIME types, gzip compression for JS/CSS
+- [x] #112 — Create `web/assets/logo.svg` + `web/assets/favicon.ico`: Monsoon logo SVG, favicon
 
 ### Rapid Commit
 - [ ] #113 — Implement `internal/dhcpv4/rapid_commit.go`: RFC 4039 — two-message exchange (DISCOVER with Rapid Commit option → immediate ACK, skip OFFER/REQUEST) for fast lease acquisition

@@ -32,6 +32,7 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/migrate"
 	uisettings "github.com/monsoondhcp/monsoon/internal/settings"
 	"github.com/monsoondhcp/monsoon/internal/storage"
+	"github.com/monsoondhcp/monsoon/internal/webhook"
 	"gopkg.in/yaml.v3"
 )
 
@@ -339,6 +340,11 @@ func run() int {
 	if cfg.API.WebSocket.Enabled {
 		wsHub = wsapi.NewHub(eventBroker)
 		wsHub.Start(runCtx)
+	}
+	var webhookDispatcher *webhook.Dispatcher
+	if len(cfg.Webhooks) > 0 {
+		webhookDispatcher = webhook.NewDispatcher(cfg.Webhooks, eventBroker, nil)
+		webhookDispatcher.Start(runCtx)
 	}
 	discoveryEngine.SetOnComplete(func(result discovery.ScanResult) {
 		eventBroker.Publish(events.Event{
@@ -648,6 +654,9 @@ func run() int {
 						log.Printf("mcp shutdown failed: %v", err)
 						return 1
 					}
+				}
+				if webhookDispatcher != nil {
+					webhookDispatcher.Wait()
 				}
 				log.Printf("monsoon stopped")
 				return 0

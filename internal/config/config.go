@@ -16,16 +16,17 @@ const (
 )
 
 type Config struct {
-	Server    ServerConfig   `yaml:"server"`
-	DHCP      DHCPConfig     `yaml:"dhcp"`
-	Subnets   []SubnetConfig `yaml:"subnets"`
-	IPAM      IPAMConfig     `yaml:"ipam"`
-	API       APIConfig      `yaml:"api"`
-	Dashboard Dashboard      `yaml:"dashboard"`
-	Auth      AuthConfig     `yaml:"auth"`
-	HA        HAConfig       `yaml:"ha"`
-	Metrics   MetricsConfig  `yaml:"metrics"`
-	Backup    BackupConfig   `yaml:"backup"`
+	Server    ServerConfig    `yaml:"server"`
+	DHCP      DHCPConfig      `yaml:"dhcp"`
+	Subnets   []SubnetConfig  `yaml:"subnets"`
+	IPAM      IPAMConfig      `yaml:"ipam"`
+	API       APIConfig       `yaml:"api"`
+	Dashboard Dashboard       `yaml:"dashboard"`
+	Auth      AuthConfig      `yaml:"auth"`
+	HA        HAConfig        `yaml:"ha"`
+	Metrics   MetricsConfig   `yaml:"metrics"`
+	Backup    BackupConfig    `yaml:"backup"`
+	Webhooks  []WebhookConfig `yaml:"webhooks"`
 }
 
 type ServerConfig struct {
@@ -209,6 +210,20 @@ type BackupAutoConfig struct {
 	Path      string   `yaml:"path"`
 }
 
+type WebhookConfig struct {
+	Name    string             `yaml:"name"`
+	URL     string             `yaml:"url"`
+	Events  []string           `yaml:"events"`
+	Format  string             `yaml:"format"`
+	Headers map[string]string  `yaml:"headers"`
+	Retry   WebhookRetryConfig `yaml:"retry"`
+}
+
+type WebhookRetryConfig struct {
+	MaxAttempts int    `yaml:"max_attempts"`
+	Backoff     string `yaml:"backoff"`
+}
+
 type Duration struct {
 	time.Duration
 }
@@ -308,6 +323,7 @@ func DefaultConfig() *Config {
 				Path:      "/var/lib/monsoon/backups",
 			},
 		},
+		Webhooks: []WebhookConfig{},
 	}
 }
 

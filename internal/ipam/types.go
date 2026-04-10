@@ -62,6 +62,16 @@ type AddressRecord struct {
 	UpdatedAt  time.Time `json:"updated_at,omitempty"`
 }
 
+type UpsertAddressInput struct {
+	IP         string    `json:"ip"`
+	SubnetCIDR string    `json:"subnet_cidr"`
+	State      IPState   `json:"state"`
+	MAC        string    `json:"mac"`
+	Hostname   string    `json:"hostname"`
+	Source     string    `json:"source"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
 type AddressFilter struct {
 	SubnetCIDR string
 	State      IPState

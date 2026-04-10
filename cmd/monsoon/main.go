@@ -27,6 +27,7 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
 	"github.com/monsoondhcp/monsoon/internal/metrics"
+	"github.com/monsoondhcp/monsoon/internal/migrate"
 	uisettings "github.com/monsoondhcp/monsoon/internal/settings"
 	"github.com/monsoondhcp/monsoon/internal/storage"
 	"gopkg.in/yaml.v3"
@@ -52,6 +53,13 @@ func run() int {
 		doBackup     bool
 		restoreFrom  string
 		doMigrate    bool
+		migrateFrom  string
+		migrateDry   bool
+		migrateMode  string
+		migrateSub   string
+		migrateAddr  string
+		migrateRes   string
+		migrateLease string
 		debug        bool
 	)
 
@@ -67,7 +75,21 @@ func run() int {
 	flag.BoolVar(&doBackup, "backup", false, "Create backup snapshot and exit")
 	flag.StringVar(&restoreFrom, "restore", "", "Restore snapshot file")
 	flag.BoolVar(&doMigrate, "migrate", false, "Run migrations and exit")
+	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv)")
+	flag.BoolVar(&migrateDry, "dry-run", false, "Validate migration inputs without writing")
+	flag.StringVar(&migrateMode, "conflict-policy", migrate.ConflictOverwrite, "Conflict policy (overwrite|skip)")
+	flag.StringVar(&migrateSub, "subnets", "", "CSV file containing subnet records")
+	flag.StringVar(&migrateAddr, "addresses", "", "CSV file containing address records")
+	flag.StringVar(&migrateRes, "reservations", "", "CSV file containing reservation records")
+	flag.StringVar(&migrateLease, "leases", "", "CSV file containing lease records")
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
+	originalArgs := append([]string(nil), os.Args...)
+	if len(os.Args) > 1 && os.Args[1] == "migrate" {
+		os.Args = append([]string{os.Args[0], "--migrate"}, os.Args[2:]...)
+		defer func() {
+			os.Args = originalArgs
+		}()
+	}
 	flag.Parse()
 
 	if showVersion {
@@ -179,14 +201,32 @@ func run() int {
 		return 0
 	}
 
-	if doMigrate {
-		fmt.Println("migration runner is scaffolded but source adapters are not implemented yet")
-		return 0
-	}
-
 	leaseStore := lease.NewStore(eng)
 	uiSettingsStore := uisettings.NewUIStore(eng)
 	ipamEngine := ipam.NewEngine(eng, leaseStore)
+	if err := ipamEngine.SeedFromConfig(context.Background(), cfg.Subnets); err != nil {
+		log.Printf("ipam seed failed: %v", err)
+		return 1
+	}
+	if doMigrate {
+		report, err := migrate.NewRunner(ipamEngine, leaseStore).Run(context.Background(), migrate.Options{
+			Source:         migrateFrom,
+			DryRun:         migrateDry,
+			ConflictPolicy: migrateMode,
+			CSV: migrate.CSVOptions{
+				SubnetsPath:      migrateSub,
+				AddressesPath:    migrateAddr,
+				ReservationsPath: migrateRes,
+				LeasesPath:       migrateLease,
+			},
+		})
+		printMigrationReport(report)
+		if err != nil {
+			log.Printf("migration failed: %v", err)
+			return 1
+		}
+		return 0
+	}
 	discoveryEngine := discovery.NewEngineWithOptions(
 		eng,
 		leaseStore,
@@ -206,10 +246,6 @@ func run() int {
 			log.Printf("auth bootstrap failed: %v", err)
 			return 1
 		}
-	}
-	if err := ipamEngine.SeedFromConfig(context.Background(), cfg.Subnets); err != nil {
-		log.Printf("ipam seed failed: %v", err)
-		return 1
 	}
 	quarantine := cfg.IPAM.Discovery.QuarantinePeriod.Duration
 	if quarantine <= 0 {
@@ -529,4 +565,19 @@ func pickServerIdentifier(cfg *config.Config) net.IP {
 		}
 	}
 	return net.IPv4(127, 0, 0, 1).To4()
+}
+
+func printMigrationReport(report migrate.Report) {
+	startedAt := report.StartedAt.UTC().Format(time.RFC3339)
+	completedAt := report.CompletedAt.UTC().Format(time.RFC3339)
+	fmt.Printf("migration source=%s dry_run=%t started=%s completed=%s\n", report.Source, report.DryRun, startedAt, completedAt)
+	for _, file := range report.Files {
+		fmt.Printf("- %s: path=%s rows=%d applied=%d skipped=%d errors=%d\n", file.Kind, file.Path, file.Rows, file.Applied, file.Skipped, len(file.Errors))
+		for _, rowErr := range file.Errors {
+			fmt.Printf("  row %d: %s\n", rowErr.Row, rowErr.Message)
+		}
+	}
+	for _, warning := range report.Warnings {
+		fmt.Printf("warning: %s\n", warning)
+	}
 }

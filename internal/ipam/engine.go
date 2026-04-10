@@ -60,21 +60,9 @@ func (e *Engine) SeedFromConfig(ctx context.Context, subnets []config.SubnetConf
 }
 
 func (e *Engine) UpsertSubnet(_ context.Context, in UpsertSubnetInput) (Subnet, error) {
-	normalized, err := e.validateSubnet(in)
+	normalized, err := e.ValidateSubnet(context.Background(), in)
 	if err != nil {
 		return Subnet{}, err
-	}
-
-	current, _ := e.ListSubnets(context.Background())
-	for _, s := range current {
-		if s.CIDR == normalized.CIDR {
-			continue
-		}
-		a, _ := netip.ParsePrefix(s.CIDR)
-		b, _ := netip.ParsePrefix(normalized.CIDR)
-		if Overlaps(a, b) {
-			return Subnet{}, fmt.Errorf("subnet %s overlaps with %s", normalized.CIDR, s.CIDR)
-		}
 	}
 
 	now := time.Now().UTC()
@@ -92,6 +80,26 @@ func (e *Engine) UpsertSubnet(_ context.Context, in UpsertSubnetInput) (Subnet, 
 	}
 	if err := e.store.Put(treeSubnets, []byte(normalized.CIDR), raw); err != nil {
 		return Subnet{}, err
+	}
+	return normalized, nil
+}
+
+func (e *Engine) ValidateSubnet(_ context.Context, in UpsertSubnetInput) (Subnet, error) {
+	normalized, err := e.validateSubnet(in)
+	if err != nil {
+		return Subnet{}, err
+	}
+
+	current, _ := e.ListSubnets(context.Background())
+	for _, s := range current {
+		if s.CIDR == normalized.CIDR {
+			continue
+		}
+		a, _ := netip.ParsePrefix(s.CIDR)
+		b, _ := netip.ParsePrefix(normalized.CIDR)
+		if Overlaps(a, b) {
+			return Subnet{}, fmt.Errorf("subnet %s overlaps with %s", normalized.CIDR, s.CIDR)
+		}
 	}
 	return normalized, nil
 }
@@ -179,6 +187,22 @@ func (e *Engine) ListSummaries(ctx context.Context) ([]SubnetSummary, error) {
 }
 
 func (e *Engine) UpsertReservation(ctx context.Context, in UpsertReservationInput) (Reservation, error) {
+	result, err := e.ValidateReservation(ctx, in)
+	if err != nil {
+		return Reservation{}, err
+	}
+
+	raw, err := json.Marshal(result)
+	if err != nil {
+		return Reservation{}, err
+	}
+	if err := e.store.Put(treeReservations, []byte(result.MAC), raw); err != nil {
+		return Reservation{}, err
+	}
+	return result, nil
+}
+
+func (e *Engine) ValidateReservation(ctx context.Context, in UpsertReservationInput) (Reservation, error) {
 	mac := normalizeMAC(in.MAC)
 	if mac == "" {
 		return Reservation{}, fmt.Errorf("mac is required")
@@ -229,22 +253,14 @@ func (e *Engine) UpsertReservation(ctx context.Context, in UpsertReservationInpu
 		createdAt = old.CreatedAt
 	}
 
-	result := Reservation{
+	return Reservation{
 		MAC:        mac,
 		IP:         addr.String(),
 		Hostname:   strings.TrimSpace(in.Hostname),
 		SubnetCIDR: subnetCIDR,
 		CreatedAt:  createdAt,
 		UpdatedAt:  now,
-	}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		return Reservation{}, err
-	}
-	if err := e.store.Put(treeReservations, []byte(mac), raw); err != nil {
-		return Reservation{}, err
-	}
-	return result, nil
+	}, nil
 }
 
 func (e *Engine) GetReservationByMAC(_ context.Context, mac string) (Reservation, error) {
@@ -300,6 +316,17 @@ func (e *Engine) ListAddresses(ctx context.Context, filter AddressFilter) ([]Add
 	}
 
 	records := map[string]AddressRecord{}
+
+	stored, err := e.ListStoredAddresses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range stored {
+		if targetSubnet != "" && item.SubnetCIDR != targetSubnet {
+			continue
+		}
+		records[item.IP] = mergeAddressRecord(records[item.IP], item)
+	}
 
 	reservations, err := e.ListReservations(ctx)
 	if err != nil {
@@ -410,6 +437,11 @@ func (e *Engine) GetAddress(ctx context.Context, ip string) (AddressRecord, erro
 	found := false
 	var out AddressRecord
 
+	if stored, storedErr := e.GetStoredAddress(ctx, candidateIP); storedErr == nil {
+		out = mergeAddressRecord(out, stored)
+		found = true
+	}
+
 	reservations, err := e.ListReservations(ctx)
 	if err != nil {
 		return AddressRecord{}, err
@@ -469,6 +501,113 @@ func (e *Engine) GetAddress(ctx context.Context, ip string) (AddressRecord, erro
 	if !found {
 		return AddressRecord{}, storage.ErrNotFound
 	}
+	return out, nil
+}
+
+func (e *Engine) UpsertAddress(ctx context.Context, in UpsertAddressInput) (AddressRecord, error) {
+	record, err := e.ValidateAddress(ctx, in)
+	if err != nil {
+		return AddressRecord{}, err
+	}
+
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return AddressRecord{}, err
+	}
+	if err := e.store.Put(treeAddresses, []byte(record.IP), raw); err != nil {
+		return AddressRecord{}, err
+	}
+	return record, nil
+}
+
+func (e *Engine) ValidateAddress(ctx context.Context, in UpsertAddressInput) (AddressRecord, error) {
+	addr, err := netip.ParseAddr(strings.TrimSpace(in.IP))
+	if err != nil {
+		return AddressRecord{}, fmt.Errorf("invalid ip: %w", err)
+	}
+
+	subnets, err := e.ListSubnets(ctx)
+	if err != nil {
+		return AddressRecord{}, err
+	}
+
+	subnetCIDR := strings.TrimSpace(in.SubnetCIDR)
+	if subnetCIDR != "" {
+		subnet, ok := lookupSubnet(subnets, subnetCIDR)
+		if !ok {
+			return AddressRecord{}, fmt.Errorf("subnet not found: %s", subnetCIDR)
+		}
+		prefix, parseErr := netip.ParsePrefix(subnet.CIDR)
+		if parseErr != nil || !prefix.Contains(addr) {
+			return AddressRecord{}, fmt.Errorf("ip is outside subnet %s", subnet.CIDR)
+		}
+		subnetCIDR = subnet.CIDR
+	} else {
+		subnetCIDR = inferSubnetForAddr(addr, subnets)
+		if subnetCIDR == "" {
+			return AddressRecord{}, fmt.Errorf("ip does not belong to a configured subnet")
+		}
+	}
+
+	state := in.State
+	if state == "" {
+		state = IPStateAvailable
+	}
+	switch state {
+	case IPStateAvailable, IPStateDHCP, IPStateReserved, IPStateConflict, IPStateQuarantined:
+	default:
+		return AddressRecord{}, fmt.Errorf("invalid address state: %s", state)
+	}
+
+	updatedAt := in.UpdatedAt.UTC()
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
+
+	record := AddressRecord{
+		IP:         addr.String(),
+		SubnetCIDR: subnetCIDR,
+		State:      state,
+		MAC:        normalizeMAC(in.MAC),
+		Hostname:   strings.TrimSpace(in.Hostname),
+		Source:     strings.TrimSpace(in.Source),
+		UpdatedAt:  updatedAt,
+	}
+	if record.Source == "" {
+		record.Source = "manual"
+	}
+	return record, nil
+}
+
+func (e *Engine) GetStoredAddress(_ context.Context, ip string) (AddressRecord, error) {
+	raw, err := e.store.Get(treeAddresses, []byte(strings.TrimSpace(ip)))
+	if err != nil {
+		return AddressRecord{}, err
+	}
+	var out AddressRecord
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return AddressRecord{}, err
+	}
+	return out, nil
+}
+
+func (e *Engine) DeleteStoredAddress(_ context.Context, ip string) error {
+	return e.store.Delete(treeAddresses, []byte(strings.TrimSpace(ip)))
+}
+
+func (e *Engine) ListStoredAddresses(_ context.Context) ([]AddressRecord, error) {
+	out := make([]AddressRecord, 0, 64)
+	err := e.store.Iterate(treeAddresses, nil, nil, func(_, v []byte) bool {
+		var item AddressRecord
+		if json.Unmarshal(v, &item) == nil {
+			out = append(out, item)
+		}
+		return true
+	})
+	if err != nil && err != storage.ErrNotFound {
+		return nil, err
+	}
+	sortAddressRecords(out)
 	return out, nil
 }
 

@@ -78,7 +78,7 @@ func run() int {
 	flag.BoolVar(&doBackup, "backup", false, "Create backup snapshot and exit")
 	flag.StringVar(&restoreFrom, "restore", "", "Restore snapshot file")
 	flag.BoolVar(&doMigrate, "migrate", false, "Run migrations and exit")
-	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, isc-dhcp, kea, netbox)")
+	flag.StringVar(&migrateFrom, "from", "", "Migration source (csv, isc-dhcp, kea, netbox, phpipam)")
 	flag.BoolVar(&migrateDry, "dry-run", false, "Validate migration inputs without writing")
 	flag.StringVar(&migrateMode, "conflict-policy", migrate.ConflictOverwrite, "Conflict policy (overwrite|skip)")
 	flag.StringVar(&migrateSrcCfg, "source-config", "", "Source configuration file for migration adapters such as Kea")

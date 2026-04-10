@@ -401,6 +401,109 @@ func TestRunnerNetBoxImport(t *testing.T) {
 	}
 }
 
+func TestRunnerPHPIPAMImport(t *testing.T) {
+	t.Parallel()
+
+	runner, ipamEngine, _ := newTestRunner(t)
+	ctx := context.Background()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("token") != "phpipam-token" && r.Header.Get("phpipam-token") != "phpipam-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/sections/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    200,
+				"success": true,
+				"data": []map[string]any{
+					{"id": "1", "name": "Production", "description": "Prod section"},
+				},
+			})
+		case "/subnets/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    200,
+				"success": true,
+				"data": []map[string]any{
+					{"id": "10", "subnet": "167787520", "mask": "24", "description": "Prod VLAN 60", "sectionId": "1", "vlanId": "5"},
+				},
+			})
+		case "/vlan/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    200,
+				"success": true,
+				"data": []map[string]any{
+					{"id": "5", "number": "60", "name": "VLAN60", "description": "Server VLAN"},
+				},
+			})
+		case "/addresses/tags/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    200,
+				"success": true,
+				"data": []map[string]any{
+					{"id": "2", "type": "Used", "name": "Used"},
+					{"id": "3", "type": "Offline", "name": "Offline"},
+				},
+			})
+		case "/addresses/all/":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"code":    200,
+				"success": true,
+				"data": []map[string]any{
+					{"id": "100", "subnetId": "10", "ip": "167787530", "hostname": "srv-60.local", "description": "Main server", "mac": "AA:BB:CC:60:00:01", "tag": "2"},
+					{"id": "101", "subnetId": "10", "ip": "167787531", "hostname": "", "description": "Old node", "mac": "", "tag": "3"},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	report, err := runner.Run(ctx, Options{
+		Source:   SourcePHPIPAM,
+		APIURL:   server.URL,
+		APIToken: "phpipam-token",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(report.Files) != 2 {
+		t.Fatalf("expected 2 file reports, got %d", len(report.Files))
+	}
+
+	subnet, err := ipamEngine.GetSubnet(ctx, "10.0.60.0/24")
+	if err != nil {
+		t.Fatalf("GetSubnet() error = %v", err)
+	}
+	if subnet.Name != "Prod VLAN 60" {
+		t.Fatalf("unexpected subnet name %q", subnet.Name)
+	}
+	if subnet.VLAN != 60 {
+		t.Fatalf("unexpected subnet vlan %d", subnet.VLAN)
+	}
+
+	addressA, err := ipamEngine.GetStoredAddress(ctx, "10.0.60.10")
+	if err != nil {
+		t.Fatalf("GetStoredAddress(10.0.60.10) error = %v", err)
+	}
+	if addressA.State != ipam.IPStateDHCP {
+		t.Fatalf("unexpected addressA state %q", addressA.State)
+	}
+	if addressA.Hostname != "srv-60.local" {
+		t.Fatalf("unexpected addressA hostname %q", addressA.Hostname)
+	}
+
+	addressB, err := ipamEngine.GetStoredAddress(ctx, "10.0.60.11")
+	if err != nil {
+		t.Fatalf("GetStoredAddress(10.0.60.11) error = %v", err)
+	}
+	if addressB.State != ipam.IPStateReserved {
+		t.Fatalf("unexpected addressB state %q", addressB.State)
+	}
+}
+
 func newTestRunner(t *testing.T) (*Runner, *ipam.Engine, lease.Store) {
 	t.Helper()
 

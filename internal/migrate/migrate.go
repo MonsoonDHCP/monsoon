@@ -16,6 +16,7 @@ const (
 	SourceISCDHCP = "isc-dhcp"
 	SourceKea     = "kea"
 	SourceNetBox  = "netbox"
+	SourcePHPIPAM = "phpipam"
 
 	ConflictOverwrite = "overwrite"
 	ConflictSkip      = "skip"
@@ -139,6 +140,18 @@ func (r *Runner) Run(ctx context.Context, opts Options) (Report, error) {
 		netboxReport, err := r.runNetBox(ctx, opts.APIURL, opts.APIToken, opts.DryRun, policy)
 		report.Files = netboxReport.Files
 		report.Warnings = append(report.Warnings, netboxReport.Warnings...)
+		report.CompletedAt = time.Now().UTC()
+		if err != nil {
+			return report, err
+		}
+		if hasRowErrors(report.Files) {
+			return report, fmt.Errorf("migration completed with %d row errors", countRowErrors(report.Files))
+		}
+		return report, nil
+	case SourcePHPIPAM:
+		phpipamReport, err := r.runPHPIPAM(ctx, opts.APIURL, opts.APIToken, opts.DryRun, policy)
+		report.Files = phpipamReport.Files
+		report.Warnings = append(report.Warnings, phpipamReport.Warnings...)
 		report.CompletedAt = time.Now().UTC()
 		if err != nil {
 			return report, err

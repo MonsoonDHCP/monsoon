@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/monsoondhcp/monsoon/internal/api/mcp"
 	"github.com/monsoondhcp/monsoon/internal/api/rest"
 	"github.com/monsoondhcp/monsoon/internal/audit"
 	"github.com/monsoondhcp/monsoon/internal/auth"
@@ -525,10 +526,46 @@ func run() int {
 		serverErr <- restServer.Start()
 	}()
 
+	var mcpServer *rest.Server
+	mcpErr := make(chan error, 1)
+	if cfg.API.MCP.Enabled {
+		mcpHandler := mcp.NewServer(mcp.HandlerDeps{
+			LeaseStore:      leaseStore,
+			IPAMEngine:      ipamEngine,
+			DiscoveryEngine: discoveryEngine,
+			AuditLogger:     auditLogger,
+			EventBroker:     eventBroker,
+			Version:         version,
+			StartedAt:       startedAt,
+			DHCPv4Enabled:   cfg.DHCP.V4.Enabled,
+			DHCPv4Listen:    cfg.DHCP.V4.Listen,
+			DHCPv4Running: func() bool {
+				if dhcpServer != nil {
+					return dhcpServer.Running()
+				}
+				return dhcpStarted
+			},
+			MCPListen: cfg.API.MCP.Listen,
+		}).Handler()
+		mcpHandler = rest.Chain(
+			mcpHandler,
+			rest.RequestIDMiddleware(),
+			rest.RecoveryMiddleware(),
+			rest.CORSMiddleware(cfg.API.REST.CORSOrigins),
+			rest.RateLimitMiddleware(cfg.API.REST.RateLimit),
+			rest.AuthMiddleware(authService, enforceAuth),
+			rest.LoggingMiddleware(),
+		)
+		mcpServer = rest.NewServer(cfg.API.MCP.Listen, mcpHandler)
+		go func() {
+			mcpErr <- mcpServer.Start()
+		}()
+	}
+
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	log.Printf("monsoon started: rest=%s metrics=%s data=%s", cfg.API.REST.Listen, metricsPath, cfg.Server.DataDir)
+	log.Printf("monsoon started: rest=%s mcp=%s metrics=%s data=%s", cfg.API.REST.Listen, cfg.API.MCP.Listen, metricsPath, cfg.Server.DataDir)
 
 	for {
 		select {
@@ -541,6 +578,11 @@ func run() int {
 		case err := <-dhcpErr:
 			if err != nil {
 				log.Printf("dhcpv4 server error: %v", err)
+				return 1
+			}
+		case err := <-mcpErr:
+			if err != nil {
+				log.Printf("mcp server error: %v", err)
 				return 1
 			}
 		case sig := <-sigCh:
@@ -562,6 +604,12 @@ func run() int {
 				if err := restServer.Shutdown(ctx); err != nil {
 					log.Printf("shutdown failed: %v", err)
 					return 1
+				}
+				if mcpServer != nil {
+					if err := mcpServer.Shutdown(ctx); err != nil {
+						log.Printf("mcp shutdown failed: %v", err)
+						return 1
+					}
 				}
 				log.Printf("monsoon stopped")
 				return 0

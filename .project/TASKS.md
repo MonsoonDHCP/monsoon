@@ -196,8 +196,8 @@
 - [ ] #106 — Implement gRPC service handlers: SubnetService, LeaseService, AddressService, DiscoveryService — map to IPAM engine methods, streaming for WatchLeases/WatchDiscovery
 
 ### MCP Server
-- [ ] #107 — Implement `internal/api/mcp/server.go`: MCP server — JSON-RPC 2.0 over SSE transport, tool listing, tool invocation dispatch
-- [ ] #108 — Implement `internal/api/mcp/tools.go` + `internal/api/mcp/handlers.go`: All 15 MCP tools per SPECIFICATION §6.4 — rich descriptions for AI consumption, input validation, response formatting
+- [x] #107 — Implement `internal/api/mcp/server.go`: MCP server — JSON-RPC 2.0 over SSE transport, tool listing, tool invocation dispatch
+- [x] #108 — Implement `internal/api/mcp/tools.go` + `internal/api/mcp/handlers.go`: All 15 MCP tools per SPECIFICATION §6.4 — rich descriptions for AI consumption, input validation, response formatting
 
 ### Webhooks
 - [ ] #109 — Implement `internal/webhook/dispatcher.go`: Event dispatcher — subscribe to internal events, filter by configured event types per webhook, queue for delivery

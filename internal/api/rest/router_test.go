@@ -296,6 +296,19 @@ func TestAuditRoutesCaptureChanges(t *testing.T) {
 	if env.Data == nil {
 		t.Fatalf("expected audit data")
 	}
+
+	csvReq := httptest.NewRequest(http.MethodGet, "/api/v1/audit?format=csv", nil)
+	csvRR := httptest.NewRecorder()
+	mux.ServeHTTP(csvRR, csvReq)
+	if csvRR.Code != http.StatusOK {
+		t.Fatalf("audit csv export status mismatch: got %d body=%s", csvRR.Code, csvRR.Body.String())
+	}
+	if csvRR.Header().Get("Content-Type") == "" {
+		t.Fatalf("expected csv content type")
+	}
+	if csvRR.Body.Len() == 0 {
+		t.Fatalf("expected csv body")
+	}
 }
 
 func TestDiscoveryRoutes(t *testing.T) {

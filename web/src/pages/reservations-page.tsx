@@ -15,7 +15,7 @@ const emptyForm: UpsertReservationPayload = {
 }
 
 export function ReservationsPage() {
-  const { reservations, saveReservation, removeReservation } = useDashboard()
+  const { reservations, saveReservation, removeReservation, canMutate } = useDashboard()
   const [form, setForm] = useState<UpsertReservationPayload>(emptyForm)
   const [query, setQuery] = useState("")
 
@@ -30,6 +30,7 @@ export function ReservationsPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Reservation Manager</h2>
         <p className="text-sm text-muted-foreground">Maintain fixed MAC to IP bindings with persistent backend storage.</p>
+        {!canMutate && <Badge className="mt-2" variant="warning">Read-only role</Badge>}
       </div>
 
       <Card>
@@ -43,27 +44,32 @@ export function ReservationsPage() {
             placeholder="MAC (AA:BB:CC:DD:EE:FF)"
             value={form.mac}
             onChange={(event) => setForm((prev) => ({ ...prev, mac: event.target.value }))}
+            disabled={!canMutate}
           />
           <input
             className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm"
             placeholder="IP (10.0.1.10)"
             value={form.ip}
             onChange={(event) => setForm((prev) => ({ ...prev, ip: event.target.value }))}
+            disabled={!canMutate}
           />
           <input
             className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm"
             placeholder="Hostname (optional)"
             value={form.hostname}
             onChange={(event) => setForm((prev) => ({ ...prev, hostname: event.target.value }))}
+            disabled={!canMutate}
           />
           <input
             className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm"
             placeholder="Subnet CIDR (optional)"
             value={form.subnet_cidr}
             onChange={(event) => setForm((prev) => ({ ...prev, subnet_cidr: event.target.value }))}
+            disabled={!canMutate}
           />
           <div className="md:col-span-2 flex justify-end">
             <Button
+              disabled={!canMutate}
               onClick={() =>
                 void saveReservation(form).then(() => {
                   setForm(emptyForm)
@@ -103,7 +109,7 @@ export function ReservationsPage() {
               </div>
               <div className="flex items-center gap-2">
                 <Badge variant="success">Reserved</Badge>
-                <Button variant="outline" size="sm" onClick={() => void removeReservation(item.mac)}>
+                <Button variant="outline" size="sm" onClick={() => void removeReservation(item.mac)} disabled={!canMutate}>
                   <Trash2 className="mr-2 size-4" />
                   Delete
                 </Button>

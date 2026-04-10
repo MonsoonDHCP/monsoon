@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 
 import {
+  isApiError,
   bootstrapAuth,
   createAuthToken,
   convertLeaseToReservation,
@@ -67,6 +68,9 @@ type DashboardState = {
   currentUser: AuthIdentity | null
   authTokens: AuthToken[]
   tokenSecret: string | null
+  authRequired: boolean
+  canMutate: boolean
+  isAdmin: boolean
   loading: boolean
   error: string | null
   reload: () => Promise<void>
@@ -103,14 +107,18 @@ export function useDashboardData(): DashboardState {
   const [currentUser, setCurrentUser] = useState<AuthIdentity | null>(null)
   const [authTokens, setAuthTokens] = useState<AuthToken[]>([])
   const [tokenSecret, setTokenSecret] = useState<string | null>(null)
+  const [authRequired, setAuthRequired] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
+      setLoading(true)
       setError(null)
-      const [healthData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
-        fetchHealth(),
+      const healthData = await fetchHealth()
+      setHealth(healthData)
+
+      const [leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
         fetchLeases(),
         fetchSubnets(),
         fetchRawSubnets(),
@@ -124,7 +132,6 @@ export function useDashboardData(): DashboardState {
         fetchUISettings(),
         fetchAuditEntries({ limit: 200 }),
       ])
-      setHealth(healthData)
       setLeases(leaseData)
       setSubnets(subnetData)
       setSubnetRecords(subnetRawData)
@@ -137,6 +144,7 @@ export function useDashboardData(): DashboardState {
       setRogueServers(rogueServersData)
       setSettings(settingsData)
       setAuditEntries(auditData)
+      setAuthRequired(false)
 
       try {
         const me = await fetchCurrentUser()
@@ -152,8 +160,27 @@ export function useDashboardData(): DashboardState {
         setAuthTokens([])
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unknown error"
-      setError(message)
+      if (isApiError(err) && err.status === 401) {
+        setAuthRequired(true)
+        setCurrentUser(null)
+        setAuthTokens([])
+        setLeases([])
+        setSubnets([])
+        setSubnetRecords([])
+        setAddresses([])
+        setReservations([])
+        setDiscovery(null)
+        setDiscoveryProgress(null)
+        setDiscoveryResults([])
+        setDiscoveryConflicts([])
+        setRogueServers([])
+        setAuditEntries([])
+        setSettings(null)
+        setError("Authentication required. Please sign in.")
+      } else {
+        const message = err instanceof Error ? err.message : "Unknown error"
+        setError(message)
+      }
     } finally {
       setLoading(false)
     }
@@ -228,27 +255,40 @@ export function useDashboardData(): DashboardState {
 
   const loginWithPassword = useCallback(
     async (username: string, password: string) => {
-      await login(username, password)
-      await load()
+      setError(null)
+      try {
+        await login(username, password)
+        await load()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Login failed"
+        setError(message)
+        throw err
+      }
     },
     [load],
   )
 
   const bootstrapAndLogin = useCallback(
     async (username: string, password: string) => {
-      await bootstrapAuth(username, password)
-      await login(username, password)
-      await load()
+      setError(null)
+      try {
+        await bootstrapAuth(username, password)
+        await login(username, password)
+        await load()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "Bootstrap failed"
+        setError(message)
+        throw err
+      }
     },
     [load],
   )
 
   const logoutCurrentUser = useCallback(async () => {
     await logout()
-    setCurrentUser(null)
-    setAuthTokens([])
+    await load()
     setTokenSecret(null)
-  }, [])
+  }, [load])
 
   const createToken = useCallback(
     async (payload: { name: string; role: string; expires_in_hours?: number; description?: string }) => {
@@ -270,7 +310,7 @@ export function useDashboardData(): DashboardState {
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null
     void load()
-    if (settings?.auto_refresh ?? true) {
+    if (!authRequired && (settings?.auto_refresh ?? true)) {
       timer = setInterval(() => {
         void load()
       }, 15000)
@@ -280,9 +320,12 @@ export function useDashboardData(): DashboardState {
         clearInterval(timer)
       }
     }
-  }, [load, settings?.auto_refresh])
+  }, [authRequired, load, settings?.auto_refresh])
 
   useEffect(() => {
+    if (authRequired) {
+      return
+    }
     const source = new EventSource("/api/v1/events")
     const refresh = () => {
       void load()
@@ -306,44 +349,53 @@ export function useDashboardData(): DashboardState {
       source.removeEventListener("settings.ui_updated", refresh)
       source.close()
     }
-  }, [load])
+  }, [authRequired, load])
 
   return useMemo(
-    () => ({
-      health,
-      leases,
-      subnets,
-      subnetRecords,
-      addresses,
-      reservations,
-      discovery,
-      discoveryResults,
-      discoveryProgress,
-      discoveryConflicts,
-      rogueServers,
-      auditEntries,
-      settings,
-      currentUser,
-      authTokens,
-      tokenSecret,
-      loading,
-      error,
-      reload: load,
-      release,
-      reserveLease,
-      triggerScan,
-      saveSettings,
-      saveSubnet,
-      removeSubnet,
-      saveReservation,
-      removeReservation,
-      loadAddressesForSubnet,
-      loginWithPassword,
-      bootstrapAndLogin,
-      logoutCurrentUser,
-      createToken,
-      revokeToken,
-    }),
+    () => {
+      const role = currentUser?.role ?? ""
+      const isAdmin = role === "admin"
+      const canMutate = !authRequired || role === "admin" || role === "operator"
+
+      return {
+        health,
+        leases,
+        subnets,
+        subnetRecords,
+        addresses,
+        reservations,
+        discovery,
+        discoveryResults,
+        discoveryProgress,
+        discoveryConflicts,
+        rogueServers,
+        auditEntries,
+        settings,
+        currentUser,
+        authTokens,
+        tokenSecret,
+        authRequired,
+        canMutate,
+        isAdmin,
+        loading,
+        error,
+        reload: load,
+        release,
+        reserveLease,
+        triggerScan,
+        saveSettings,
+        saveSubnet,
+        removeSubnet,
+        saveReservation,
+        removeReservation,
+        loadAddressesForSubnet,
+        loginWithPassword,
+        bootstrapAndLogin,
+        logoutCurrentUser,
+        createToken,
+        revokeToken,
+      }
+    },
     [
       health,
       leases,
@@ -361,6 +413,7 @@ export function useDashboardData(): DashboardState {
       currentUser,
       authTokens,
       tokenSecret,
+      authRequired,
       loading,
       error,
       load,

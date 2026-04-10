@@ -6,13 +6,14 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export function DiscoveryPage() {
-  const { discovery, discoveryProgress, discoveryResults, discoveryConflicts, rogueServers, triggerScan } = useDashboard()
+  const { discovery, discoveryProgress, discoveryResults, discoveryConflicts, rogueServers, triggerScan, canMutate } = useDashboard()
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Discovery Operations</h2>
         <p className="text-sm text-muted-foreground">Active scan orchestration and rogue DHCP detection workflow.</p>
+        {!canMutate && <Badge className="mt-2" variant="warning">Read-only role</Badge>}
       </div>
 
       <div className="grid gap-4 xl:grid-cols-3">
@@ -25,7 +26,7 @@ export function DiscoveryPage() {
             <CardDescription>Run a coordinated sweep over configured subnets.</CardDescription>
           </CardHeader>
           <CardContent>
-            <Button onClick={() => void triggerScan()} disabled={discovery?.scanning}>
+            <Button onClick={() => void triggerScan()} disabled={discovery?.scanning || !canMutate}>
               {discovery?.scanning ? "Scanning..." : "Trigger scan"}
             </Button>
             <div className="mt-3">

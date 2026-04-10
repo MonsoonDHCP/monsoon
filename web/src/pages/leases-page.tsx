@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export function LeasesPage() {
-  const { leases, release, reserveLease } = useDashboard()
+  const { leases, release, reserveLease, canMutate } = useDashboard()
   const [query, setQuery] = useState("")
 
   const filtered = useMemo(() => {
@@ -21,6 +21,7 @@ export function LeasesPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Lease Browser</h2>
         <p className="text-sm text-muted-foreground">Filter, inspect and release active addresses.</p>
+        {!canMutate && <Badge className="mt-2" variant="warning">Read-only role</Badge>}
       </div>
 
       <Card>
@@ -63,11 +64,11 @@ export function LeasesPage() {
                     <td className="py-3 text-muted-foreground">{lease.subnet_id || "-"}</td>
                     <td className="py-3 text-right">
                       <div className="flex justify-end gap-2">
-                        <Button variant="outline" size="sm" onClick={() => void reserveLease(lease.ip)}>
+                        <Button variant="outline" size="sm" onClick={() => void reserveLease(lease.ip)} disabled={!canMutate}>
                           <ShieldPlus className="mr-2 size-4" />
                           Reserve
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => void release(lease.ip)}>
+                        <Button variant="outline" size="sm" onClick={() => void release(lease.ip)} disabled={!canMutate}>
                           Release
                         </Button>
                       </div>

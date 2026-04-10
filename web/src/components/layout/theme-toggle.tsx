@@ -9,8 +9,18 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { Button } from "@/components/ui/button"
 
-export function ThemeToggle() {
+type ThemeValue = "light" | "dark" | "system"
+
+type ThemeToggleProps = {
+  onThemeChange?: (theme: ThemeValue) => void
+}
+
+export function ThemeToggle({ onThemeChange }: ThemeToggleProps) {
   const { setTheme } = useTheme()
+  const apply = (nextTheme: ThemeValue) => {
+    setTheme(nextTheme)
+    onThemeChange?.(nextTheme)
+  }
 
   return (
     <DropdownMenu>
@@ -21,15 +31,15 @@ export function ThemeToggle() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-44">
-        <DropdownMenuItem onClick={() => setTheme("light")}>
+        <DropdownMenuItem onClick={() => apply("light")}>
           <SunMedium className="mr-2 size-4" />
           Light
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("dark")}>
+        <DropdownMenuItem onClick={() => apply("dark")}>
           <MoonStar className="mr-2 size-4" />
           Dark
         </DropdownMenuItem>
-        <DropdownMenuItem onClick={() => setTheme("system")}>
+        <DropdownMenuItem onClick={() => apply("system")}>
           <MonitorCog className="mr-2 size-4" />
           System
         </DropdownMenuItem>

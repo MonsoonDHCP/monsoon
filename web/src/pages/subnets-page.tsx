@@ -20,7 +20,7 @@ const defaultForm: UpsertSubnetPayload = {
 }
 
 export function SubnetsPage() {
-  const { subnets, subnetRecords, saveSubnet, removeSubnet } = useDashboard()
+  const { subnets, subnetRecords, saveSubnet, removeSubnet, canMutate } = useDashboard()
   const [form, setForm] = useState<UpsertSubnetPayload>(defaultForm)
   const [dnsInput, setDnsInput] = useState("")
 
@@ -33,6 +33,7 @@ export function SubnetsPage() {
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Subnet Topology</h2>
         <p className="text-sm text-muted-foreground">Manage subnet inventory and monitor utilization in one place.</p>
+        {!canMutate && <Badge className="mt-2" variant="warning">Read-only role</Badge>}
       </div>
 
       <Card>
@@ -41,12 +42,12 @@ export function SubnetsPage() {
           <CardDescription>Writes to /api/v1/subnets</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-2">
-          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="CIDR (10.0.1.0/24)" value={form.cidr} onChange={(e) => setForm((s) => ({ ...s, cidr: e.target.value }))} />
-          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Name" value={form.name} onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} />
-          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Gateway" value={form.gateway} onChange={(e) => setForm((s) => ({ ...s, gateway: e.target.value }))} />
-          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="VLAN" type="number" value={form.vlan} onChange={(e) => setForm((s) => ({ ...s, vlan: Number(e.target.value) }))} />
-          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Pool start" value={form.pool_start} onChange={(e) => setForm((s) => ({ ...s, pool_start: e.target.value }))} />
-          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Pool end" value={form.pool_end} onChange={(e) => setForm((s) => ({ ...s, pool_end: e.target.value }))} />
+          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="CIDR (10.0.1.0/24)" value={form.cidr} onChange={(e) => setForm((s) => ({ ...s, cidr: e.target.value }))} disabled={!canMutate} />
+          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Name" value={form.name} onChange={(e) => setForm((s) => ({ ...s, name: e.target.value }))} disabled={!canMutate} />
+          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Gateway" value={form.gateway} onChange={(e) => setForm((s) => ({ ...s, gateway: e.target.value }))} disabled={!canMutate} />
+          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="VLAN" type="number" value={form.vlan} onChange={(e) => setForm((s) => ({ ...s, vlan: Number(e.target.value) }))} disabled={!canMutate} />
+          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Pool start" value={form.pool_start} onChange={(e) => setForm((s) => ({ ...s, pool_start: e.target.value }))} disabled={!canMutate} />
+          <input className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm" placeholder="Pool end" value={form.pool_end} onChange={(e) => setForm((s) => ({ ...s, pool_end: e.target.value }))} disabled={!canMutate} />
           <input
             className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm md:col-span-2"
             placeholder="DNS list (comma separated)"
@@ -56,9 +57,10 @@ export function SubnetsPage() {
               setDnsInput(value)
               setForm((s) => ({ ...s, dns: value.split(",").map((x) => x.trim()).filter(Boolean) }))
             }}
+            disabled={!canMutate}
           />
           <label className="flex items-center gap-2 text-sm text-muted-foreground">
-            <input type="checkbox" checked={form.dhcp_enabled} onChange={(e) => setForm((s) => ({ ...s, dhcp_enabled: e.target.checked }))} />
+            <input type="checkbox" checked={form.dhcp_enabled} onChange={(e) => setForm((s) => ({ ...s, dhcp_enabled: e.target.checked }))} disabled={!canMutate} />
             DHCP enabled
           </label>
           <div className="flex justify-end md:col-span-2">
@@ -69,6 +71,7 @@ export function SubnetsPage() {
                   setDnsInput("")
                 })
               }
+              disabled={!canMutate}
             >
               <Plus className="mr-2 size-4" />
               Save subnet
@@ -116,7 +119,7 @@ export function SubnetsPage() {
                 <p className="font-mono text-xs text-muted-foreground">{record.cidr}</p>
                 <p className="text-sm">{record.name || "(unnamed)"}</p>
               </div>
-              <Button variant="outline" size="sm" onClick={() => void removeSubnet(record.cidr)}>
+              <Button variant="outline" size="sm" onClick={() => void removeSubnet(record.cidr)} disabled={!canMutate}>
                 <Trash2 className="mr-2 size-4" />
                 Delete
               </Button>

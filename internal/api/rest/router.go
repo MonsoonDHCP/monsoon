@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -476,7 +477,66 @@ func registerAuditRoutes(mux *http.ServeMux, logger *audit.Logger) {
 			WriteError(w, http.StatusInternalServerError, "audit_query_failed", err.Error())
 			return
 		}
-		WriteJSON(w, http.StatusOK, entries, map[string]any{"total": len(entries)})
+
+		format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+		switch format {
+		case "", "envelope":
+			WriteJSON(w, http.StatusOK, entries, map[string]any{"total": len(entries)})
+			return
+		case "json":
+			filename := "monsoon-audit-" + time.Now().UTC().Format("20060102-150405") + ".json"
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+			raw, marshalErr := json.MarshalIndent(entries, "", "  ")
+			if marshalErr != nil {
+				WriteError(w, http.StatusInternalServerError, "audit_export_failed", marshalErr.Error())
+				return
+			}
+			_, _ = w.Write(raw)
+			return
+		case "csv":
+			filename := "monsoon-audit-" + time.Now().UTC().Format("20060102-150405") + ".csv"
+			w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+			w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+			writer := csv.NewWriter(w)
+			_ = writer.Write([]string{
+				"id",
+				"timestamp",
+				"actor",
+				"action",
+				"object_type",
+				"object_id",
+				"source",
+				"before",
+				"after",
+				"meta",
+			})
+			for _, entry := range entries {
+				beforeRaw, _ := json.Marshal(entry.Before)
+				afterRaw, _ := json.Marshal(entry.After)
+				metaRaw, _ := json.Marshal(entry.Meta)
+				_ = writer.Write([]string{
+					entry.ID,
+					entry.Timestamp.UTC().Format(time.RFC3339),
+					entry.Actor,
+					entry.Action,
+					entry.ObjectType,
+					entry.ObjectID,
+					entry.Source,
+					string(beforeRaw),
+					string(afterRaw),
+					string(metaRaw),
+				})
+			}
+			writer.Flush()
+			if writer.Error() != nil {
+				WriteError(w, http.StatusInternalServerError, "audit_export_failed", writer.Error().Error())
+			}
+			return
+		default:
+			WriteError(w, http.StatusBadRequest, "invalid_format", "format must be envelope, json, or csv")
+			return
+		}
 	})
 }
 

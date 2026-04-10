@@ -24,6 +24,22 @@ const JSON_HEADERS = {
   "Content-Type": "application/json",
 }
 
+export class ApiError extends Error {
+  status: number
+  code?: string
+
+  constructor(message: string, status: number, code?: string) {
+    super(message)
+    this.name = "ApiError"
+    this.status = status
+    this.code = code
+  }
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     credentials: "include",
@@ -34,12 +50,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     },
   })
 
-  const body = (await response.json()) as ApiEnvelope<T>
-  if (!response.ok || body.error) {
-    const message = body.error?.message ?? `HTTP ${response.status}`
-    throw new Error(message)
+  const contentType = response.headers.get("content-type") ?? ""
+  const isJSON = contentType.includes("application/json")
+  const body = isJSON ? ((await response.json()) as ApiEnvelope<T>) : undefined
+
+  if (!response.ok || body?.error) {
+    const message = body?.error?.message ?? `HTTP ${response.status}`
+    throw new ApiError(message, response.status, body?.error?.code)
   }
-  return body.data as T
+
+  return body?.data as T
 }
 
 export function fetchHealth() {

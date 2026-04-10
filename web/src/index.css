@@ -49,6 +49,14 @@
   --ring: oklch(0.74 0.14 209);
 }
 
+:root[data-density="compact"] {
+  --radius: 0.72rem;
+}
+
+:root[data-density="compact"] body {
+  font-size: 0.94rem;
+}
+
 @theme inline {
   --font-sans: "Manrope", "Segoe UI", sans-serif;
   --font-display: "Space Grotesk", "Segoe UI", sans-serif;

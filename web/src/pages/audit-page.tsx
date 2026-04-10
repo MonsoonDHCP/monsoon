@@ -1,8 +1,9 @@
-import { ClipboardList, Search } from "lucide-react"
+import { ClipboardList, Download, Search } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import { useDashboard } from "@/app/dashboard-context"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 
 export function AuditPage() {
@@ -17,6 +18,17 @@ export function AuditPage() {
     )
   }, [auditEntries, query])
 
+  const exportSuffix = useMemo(() => {
+    const params = new URLSearchParams()
+    if (query.trim()) {
+      params.set("q", query.trim())
+    }
+    return params.toString()
+  }, [query])
+
+  const csvHref = `/api/v1/audit?${exportSuffix ? `${exportSuffix}&` : ""}format=csv`
+  const jsonHref = `/api/v1/audit?${exportSuffix ? `${exportSuffix}&` : ""}format=json`
+
   return (
     <div className="space-y-6">
       <div>
@@ -26,10 +38,26 @@ export function AuditPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ClipboardList className="size-4 text-cyan-400" />
-            Audit log
-          </CardTitle>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2">
+              <ClipboardList className="size-4 text-cyan-400" />
+              Audit log
+            </CardTitle>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" asChild>
+                <a href={csvHref} target="_blank" rel="noreferrer">
+                  <Download className="mr-2 size-4" />
+                  Export CSV
+                </a>
+              </Button>
+              <Button variant="outline" size="sm" asChild>
+                <a href={jsonHref} target="_blank" rel="noreferrer">
+                  <Download className="mr-2 size-4" />
+                  Export JSON
+                </a>
+              </Button>
+            </div>
+          </div>
           <CardDescription>{filtered.length} records</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

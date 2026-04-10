@@ -20,6 +20,7 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/config"
 	"github.com/monsoondhcp/monsoon/internal/dhcpv4"
+	"github.com/monsoondhcp/monsoon/internal/discovery"
 	"github.com/monsoondhcp/monsoon/internal/events"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
@@ -118,6 +119,8 @@ func run() int {
 		"users",
 		"api_tokens",
 		"api_tokens_by_hash",
+		"discovery_scans",
+		"discovery_meta",
 	})
 	if err != nil {
 		log.Printf("storage startup failed: %v", err)
@@ -180,6 +183,15 @@ func run() int {
 	leaseStore := lease.NewStore(eng)
 	uiSettingsStore := uisettings.NewUIStore(eng)
 	ipamEngine := ipam.NewEngine(eng, leaseStore)
+	discoveryEngine := discovery.NewEngineWithOptions(
+		eng,
+		leaseStore,
+		ipamEngine,
+		cfg.IPAM.Discovery.DefaultInterval.Duration,
+		discovery.Options{
+			Methods: cfg.IPAM.Discovery.Methods,
+		},
+	)
 	auditLogger := audit.NewLogger(eng)
 	authService := auth.NewService(eng, auth.ServiceOptions{
 		CookieName:      cfg.Auth.Session.CookieName,
@@ -205,6 +217,10 @@ func run() int {
 
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
+
+	if cfg.IPAM.Discovery.Enabled {
+		discoveryEngine.Start(runCtx)
+	}
 
 	dhcpErr := make(chan error, 1)
 	var dhcpServer *dhcpv4.Server
@@ -241,6 +257,7 @@ func run() int {
 	routeDeps := rest.RouterDeps{
 		LeaseStore:       leaseStore,
 		IPAMEngine:       ipamEngine,
+		DiscoveryEngine:  discoveryEngine,
 		AuthService:      authService,
 		AuthSecureCookie: cfg.Auth.Session.Secure,
 		AuditLogger:      auditLogger,
@@ -294,8 +311,7 @@ func run() int {
 	}
 
 	enforceAuth := cfg.Auth.Enabled &&
-		strings.EqualFold(cfg.Auth.Type, "local") &&
-		strings.TrimSpace(cfg.Auth.Local.AdminPasswordHash) != ""
+		strings.EqualFold(cfg.Auth.Type, "local")
 
 	restHandler := rest.Chain(
 		mux,

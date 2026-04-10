@@ -63,12 +63,55 @@ export type DiscoveryStatus = {
   rogue_detected: boolean
   active_conflicts: number
   next_scheduled_scan: string
+  scanning?: boolean
+  latest_scan_id?: string
 }
 
 export type DiscoveryScanResponse = {
   status: string
   scan_id: string
   estimated_in: string
+}
+
+export type DiscoveryConflict = {
+  ip: string
+  macs: string[]
+  severity: string
+  note?: string
+}
+
+export type RogueServer = {
+  ip: string
+  mac?: string
+  source?: string
+  detected: string
+}
+
+export type DiscoveryHost = {
+  ip: string
+  mac?: string
+  hostname?: string
+  subnet?: string
+  state: string
+  seen_at: string
+}
+
+export type DiscoveryResult = {
+  scan_id: string
+  status: string
+  reason?: string
+  subnets?: string[]
+  started_at: string
+  completed_at?: string
+  duration_ms: number
+  total_hosts: number
+  new_hosts: number
+  known_hosts: number
+  missing_hosts: number
+  changed_hosts: number
+  conflicts: DiscoveryConflict[]
+  rogue_servers: RogueServer[]
+  hosts?: DiscoveryHost[]
 }
 
 export type Reservation = {

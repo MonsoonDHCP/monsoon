@@ -13,6 +13,7 @@ import (
 
 	"github.com/monsoondhcp/monsoon/internal/audit"
 	"github.com/monsoondhcp/monsoon/internal/auth"
+	"github.com/monsoondhcp/monsoon/internal/discovery"
 	"github.com/monsoondhcp/monsoon/internal/events"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
@@ -28,6 +29,7 @@ type DashboardConfig struct {
 type RouterDeps struct {
 	LeaseStore       lease.Store
 	IPAMEngine       *ipam.Engine
+	DiscoveryEngine  *discovery.Engine
 	AuthService      *auth.Service
 	AuthSecureCookie bool
 	AuditLogger      *audit.Logger
@@ -62,7 +64,9 @@ func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
 
 	if deps.LeaseStore != nil {
 		registerLeaseRoutes(mux, deps.LeaseStore, deps.IPAMEngine, deps.EventBroker, deps.AuditLogger)
-		registerDiscoveryRoutes(mux, deps.LeaseStore, deps.EventBroker)
+	}
+	if deps.DiscoveryEngine != nil {
+		registerDiscoveryRoutes(mux, deps.DiscoveryEngine, deps.EventBroker, deps.AuditLogger)
 	}
 	if deps.AuthService != nil {
 		registerAuthRoutes(mux, deps.AuthService, deps.AuthSecureCookie, deps.AuditLogger)
@@ -134,6 +138,9 @@ func registerLeaseRoutes(mux *http.ServeMux, store lease.Store, engine *ipam.Eng
 	})
 
 	mux.HandleFunc("POST /api/v1/leases/{ip}/release", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
 		ip := r.PathValue("ip")
 		l, err := store.GetByIP(r.Context(), ip)
 		if err != nil {
@@ -166,6 +173,9 @@ func registerLeaseRoutes(mux *http.ServeMux, store lease.Store, engine *ipam.Eng
 
 	if engine != nil {
 		mux.HandleFunc("POST /api/v1/leases/{ip}/reservation", func(w http.ResponseWriter, r *http.Request) {
+			if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+				return
+			}
 			ip := r.PathValue("ip")
 			l, err := store.GetByIP(r.Context(), ip)
 			if err != nil {
@@ -222,6 +232,9 @@ func registerSubnetRoutes(mux *http.ServeMux, engine *ipam.Engine, broker *event
 	})
 
 	upsert := func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
 		var payload ipam.UpsertSubnetInput
 		if err := decodeJSONBody(r, &payload); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
@@ -255,6 +268,9 @@ func registerSubnetRoutes(mux *http.ServeMux, engine *ipam.Engine, broker *event
 	mux.HandleFunc("PUT /api/v1/subnets", upsert)
 
 	mux.HandleFunc("DELETE /api/v1/subnets", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
 		cidr := strings.TrimSpace(r.URL.Query().Get("cidr"))
 		if cidr == "" {
 			WriteError(w, http.StatusBadRequest, "missing_cidr", "query parameter cidr is required")
@@ -319,6 +335,9 @@ func registerReservationRoutes(mux *http.ServeMux, engine *ipam.Engine, broker *
 	})
 
 	upsert := func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
 		var payload ipam.UpsertReservationInput
 		if err := decodeJSONBody(r, &payload); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
@@ -350,6 +369,9 @@ func registerReservationRoutes(mux *http.ServeMux, engine *ipam.Engine, broker *
 	mux.HandleFunc("PUT /api/v1/reservations", upsert)
 
 	mux.HandleFunc("DELETE /api/v1/reservations", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
 		mac := strings.TrimSpace(r.URL.Query().Get("mac"))
 		if mac == "" {
 			WriteError(w, http.StatusBadRequest, "missing_mac", "query parameter mac is required")
@@ -458,38 +480,91 @@ func registerAuditRoutes(mux *http.ServeMux, logger *audit.Logger) {
 	})
 }
 
-func registerDiscoveryRoutes(mux *http.ServeMux, store lease.Store, broker *events.Broker) {
+func registerDiscoveryRoutes(mux *http.ServeMux, engine *discovery.Engine, broker *events.Broker, logger *audit.Logger) {
 	mux.HandleFunc("GET /api/v1/discovery/status", func(w http.ResponseWriter, r *http.Request) {
-		leases, err := store.ListAll(r.Context())
-		if err != nil {
-			WriteError(w, http.StatusInternalServerError, "discovery_status_failed", err.Error())
-			return
-		}
-		conflicts := 0
-		for _, l := range leases {
-			if l.State == lease.StateDeclined {
-				conflicts++
-			}
-		}
-		WriteJSON(w, http.StatusOK, map[string]any{
-			"sensor_online":       true,
-			"last_scan_at":        time.Now().UTC().Add(-5 * time.Minute),
-			"rogue_detected":      false,
-			"active_conflicts":    conflicts,
-			"next_scheduled_scan": time.Now().UTC().Add(55 * time.Minute),
-		}, nil)
+		WriteJSON(w, http.StatusOK, engine.Status(r.Context()), nil)
 	})
 
-	mux.HandleFunc("POST /api/v1/discovery/scan", func(w http.ResponseWriter, _ *http.Request) {
-		scanID := time.Now().UTC().Format("20060102-150405")
+	mux.HandleFunc("POST /api/v1/discovery/scan", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
+		var payload discovery.ScanRequest
+		if r.ContentLength > 0 {
+			if err := decodeJSONBody(r, &payload); err != nil {
+				WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
+				return
+			}
+		}
+		scanID, err := engine.TriggerScan(r.Context(), payload)
+		if err != nil {
+			WriteError(w, http.StatusConflict, "scan_in_progress", err.Error())
+			return
+		}
 		if broker != nil {
 			broker.Publish(events.Event{Type: "discovery.scan_queued", Data: map[string]any{"scan_id": scanID}})
 		}
+		logAuditEntry(r, logger, audit.Entry{
+			Actor:      requestActor(r),
+			Action:     "discovery.scan.trigger",
+			ObjectType: "discovery_scan",
+			ObjectID:   scanID,
+			Source:     "api",
+			After: map[string]any{
+				"reason": payload.Reason,
+			},
+		})
 		WriteJSON(w, http.StatusAccepted, map[string]any{
 			"status":       "queued",
 			"scan_id":      scanID,
 			"estimated_in": "15s",
 		}, nil)
+	})
+
+	mux.HandleFunc("GET /api/v1/discovery/results", func(w http.ResponseWriter, r *http.Request) {
+		limit := 50
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			parsed, err := strconv.Atoi(raw)
+			if err != nil || parsed <= 0 {
+				WriteError(w, http.StatusBadRequest, "invalid_limit", "limit must be positive")
+				return
+			}
+			limit = parsed
+		}
+		results, err := engine.ListResults(r.Context(), limit)
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "discovery_results_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, results, map[string]any{"total": len(results)})
+	})
+
+	mux.HandleFunc("GET /api/v1/discovery/results/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		result, err := engine.GetResult(r.Context(), id)
+		if err != nil {
+			WriteError(w, http.StatusNotFound, "discovery_result_not_found", "scan result not found")
+			return
+		}
+		WriteJSON(w, http.StatusOK, result, nil)
+	})
+
+	mux.HandleFunc("GET /api/v1/discovery/conflicts", func(w http.ResponseWriter, r *http.Request) {
+		conflicts, err := engine.LatestConflicts(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "discovery_conflicts_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, conflicts, map[string]any{"total": len(conflicts)})
+	})
+
+	mux.HandleFunc("GET /api/v1/discovery/rogue", func(w http.ResponseWriter, r *http.Request) {
+		rogue, err := engine.LatestRogueServers(r.Context())
+		if err != nil {
+			WriteError(w, http.StatusInternalServerError, "discovery_rogue_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, rogue, map[string]any{"total": len(rogue)})
 	})
 }
 
@@ -504,6 +579,9 @@ func registerSettingsRoutes(mux *http.ServeMux, settings uisettings.UIStore, bro
 	})
 
 	mux.HandleFunc("PUT /api/v1/settings/ui", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleOperator) {
+			return
+		}
 		var payload uisettings.UISettings
 		if err := decodeJSONBody(r, &payload); err != nil {
 			WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
@@ -562,6 +640,18 @@ func requestActor(r *http.Request) string {
 		return identity.Username
 	}
 	return "anonymous"
+}
+
+func requireRoleForMutation(w http.ResponseWriter, r *http.Request, requiredRole string) bool {
+	identity, ok := IdentityFromContext(r.Context())
+	if !ok {
+		return true
+	}
+	if !auth.HasRole(requiredRole, identity.Role) {
+		WriteError(w, http.StatusForbidden, "forbidden", "insufficient role")
+		return false
+	}
+	return true
 }
 
 func registerEventRoutes(mux *http.ServeMux, broker *events.Broker) {

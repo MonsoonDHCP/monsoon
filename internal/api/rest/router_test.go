@@ -13,6 +13,7 @@ import (
 
 	"github.com/monsoondhcp/monsoon/internal/audit"
 	"github.com/monsoondhcp/monsoon/internal/auth"
+	"github.com/monsoondhcp/monsoon/internal/discovery"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
 	"github.com/monsoondhcp/monsoon/internal/storage"
@@ -294,5 +295,41 @@ func TestAuditRoutesCaptureChanges(t *testing.T) {
 	}
 	if env.Data == nil {
 		t.Fatalf("expected audit data")
+	}
+}
+
+func TestDiscoveryRoutes(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{"subnets", "reservations", "leases", "discovery_scans", "discovery_meta"})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	leaseStore := lease.NewStore(eng)
+	ipamEngine := ipam.NewEngine(eng, leaseStore)
+	discoveryEngine := discovery.NewEngine(eng, leaseStore, ipamEngine, time.Hour)
+
+	mux := http.NewServeMux()
+	if err := RegisterRoutes(mux, RouterDeps{
+		LeaseStore:      leaseStore,
+		IPAMEngine:      ipamEngine,
+		DiscoveryEngine: discoveryEngine,
+		Version:         "test",
+	}); err != nil {
+		t.Fatalf("register routes failed: %v", err)
+	}
+
+	statusRR := httptest.NewRecorder()
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/discovery/status", nil)
+	mux.ServeHTTP(statusRR, statusReq)
+	if statusRR.Code != http.StatusOK {
+		t.Fatalf("status code mismatch: %d", statusRR.Code)
+	}
+
+	scanRR := httptest.NewRecorder()
+	scanReq := httptest.NewRequest(http.MethodPost, "/api/v1/discovery/scan", nil)
+	mux.ServeHTTP(scanRR, scanReq)
+	if scanRR.Code != http.StatusAccepted {
+		t.Fatalf("scan code mismatch: %d", scanRR.Code)
 	}
 }

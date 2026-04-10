@@ -4,6 +4,9 @@ import type {
   AuthToken,
   AddressRecord,
   ApiEnvelope,
+  DiscoveryConflict,
+  DiscoveryResult,
+  RogueServer,
   DiscoveryScanResponse,
   DiscoveryStatus,
   HealthResponse,
@@ -88,6 +91,18 @@ export function triggerDiscoveryScan() {
   return request<DiscoveryScanResponse>("/api/v1/discovery/scan", {
     method: "POST",
   })
+}
+
+export function fetchDiscoveryResults(limit = 20) {
+  return request<DiscoveryResult[]>(`/api/v1/discovery/results?limit=${limit}`)
+}
+
+export function fetchDiscoveryConflicts() {
+  return request<DiscoveryConflict[]>("/api/v1/discovery/conflicts")
+}
+
+export function fetchDiscoveryRogueServers() {
+  return request<RogueServer[]>("/api/v1/discovery/rogue")
 }
 
 export function fetchReservations() {

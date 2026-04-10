@@ -10,6 +10,9 @@ import {
   fetchAddresses,
   fetchCurrentUser,
   deleteSubnet,
+  fetchDiscoveryConflicts,
+  fetchDiscoveryResults,
+  fetchDiscoveryRogueServers,
   fetchDiscoveryStatus,
   fetchHealth,
   fetchLeases,
@@ -32,6 +35,9 @@ import type {
   AuditEntry,
   AddressRecord,
   DiscoveryStatus,
+  DiscoveryConflict,
+  DiscoveryResult,
+  RogueServer,
   HealthResponse,
   Lease,
   Reservation,
@@ -50,6 +56,9 @@ type DashboardState = {
   addresses: AddressRecord[]
   reservations: Reservation[]
   discovery: DiscoveryStatus | null
+  discoveryResults: DiscoveryResult[]
+  discoveryConflicts: DiscoveryConflict[]
+  rogueServers: RogueServer[]
   auditEntries: AuditEntry[]
   settings: UISettings | null
   currentUser: AuthIdentity | null
@@ -82,6 +91,9 @@ export function useDashboardData(): DashboardState {
   const [addresses, setAddresses] = useState<AddressRecord[]>([])
   const [reservations, setReservations] = useState<Reservation[]>([])
   const [discovery, setDiscovery] = useState<DiscoveryStatus | null>(null)
+  const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult[]>([])
+  const [discoveryConflicts, setDiscoveryConflicts] = useState<DiscoveryConflict[]>([])
+  const [rogueServers, setRogueServers] = useState<RogueServer[]>([])
   const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([])
   const [settings, setSettings] = useState<UISettings | null>(null)
   const [currentUser, setCurrentUser] = useState<AuthIdentity | null>(null)
@@ -93,7 +105,7 @@ export function useDashboardData(): DashboardState {
   const load = useCallback(async () => {
     try {
       setError(null)
-      const [healthData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, settingsData, auditData] = await Promise.all([
+      const [healthData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
         fetchHealth(),
         fetchLeases(),
         fetchSubnets(),
@@ -101,6 +113,9 @@ export function useDashboardData(): DashboardState {
         fetchAddresses(),
         fetchReservations(),
         fetchDiscoveryStatus(),
+        fetchDiscoveryResults(30),
+        fetchDiscoveryConflicts(),
+        fetchDiscoveryRogueServers(),
         fetchUISettings(),
         fetchAuditEntries({ limit: 200 }),
       ])
@@ -111,6 +126,9 @@ export function useDashboardData(): DashboardState {
       setAddresses(addressData)
       setReservations(reservationData)
       setDiscovery(discoveryData)
+      setDiscoveryResults(discoveryResultsData)
+      setDiscoveryConflicts(discoveryConflictsData)
+      setRogueServers(rogueServersData)
       setSettings(settingsData)
       setAuditEntries(auditData)
 
@@ -291,6 +309,9 @@ export function useDashboardData(): DashboardState {
       addresses,
       reservations,
       discovery,
+      discoveryResults,
+      discoveryConflicts,
+      rogueServers,
       auditEntries,
       settings,
       currentUser,
@@ -322,6 +343,9 @@ export function useDashboardData(): DashboardState {
       addresses,
       reservations,
       discovery,
+      discoveryResults,
+      discoveryConflicts,
+      rogueServers,
       auditEntries,
       settings,
       currentUser,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -25,8 +26,10 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/config"
 	"github.com/monsoondhcp/monsoon/internal/dhcpv4"
+	"github.com/monsoondhcp/monsoon/internal/dhcpv6"
 	"github.com/monsoondhcp/monsoon/internal/discovery"
 	"github.com/monsoondhcp/monsoon/internal/events"
+	"github.com/monsoondhcp/monsoon/internal/ha"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
 	"github.com/monsoondhcp/monsoon/internal/metrics"
@@ -334,9 +337,59 @@ func run() int {
 		}()
 		dhcpStarted = true
 	}
+	dhcpV6Err := make(chan error, 1)
+	var dhcpV6Server *dhcpv6.Server
+	if cfg.DHCP.V6.Enabled {
+		poolsV6, err := dhcpv6.NewPoolManager(cfg.Subnets, cfg.DHCP.DefaultLeaseTime.Duration, leaseStore)
+		if err != nil {
+			log.Printf("dhcpv6 pool init failed: %v", err)
+			return 1
+		}
+		serverDUID := pickServerDUID(cfg)
+		handlerV6 := dhcpv6.NewHandler(
+			leaseStore,
+			poolsV6,
+			serverDUID,
+			cfg.DHCP.DefaultLeaseTime.Duration,
+			cfg.DHCP.MaxLeaseTime.Duration,
+		)
+		if domain := strings.TrimSpace(cfg.DHCP.DDNS.ForwardZone); domain != "" {
+			handlerV6.SetDomainList([]string{domain})
+		}
+		handlerV6.SetOnLeaseEvent(func(eventType string, item lease.Lease) {
+			data := map[string]any{
+				"ip":     item.IP,
+				"subnet": item.SubnetID,
+			}
+			eventBroker.Publish(events.Event{Type: eventType, Data: data})
+		})
+		dhcpV6Server = dhcpv6.NewServer(cfg.DHCP.V6.Listen, handlerV6)
+		go func() {
+			dhcpV6Err <- dhcpV6Server.Start(runCtx)
+		}()
+	}
 
 	reg := metrics.NewRegistry()
 	reg.SetGauge("monsoon_build_info", map[string]string{"version": version}, 1)
+	var haManager *ha.Manager
+	if cfg.HA.Enabled {
+		haManager = ha.NewManager(ha.Config{
+			Node:              cfg.Server.Hostname,
+			Mode:              cfg.HA.Mode,
+			Priority:          cfg.HA.Priority,
+			PeerAddress:       cfg.HA.PeerAddress,
+			HeartbeatInterval: cfg.HA.HeartbeatInterval.Duration,
+			FailoverTimeout:   cfg.HA.FailoverTimeout.Duration,
+			LeaseSync:         cfg.HA.LeaseSync,
+			SharedSecret:      cfg.HA.SharedSecret,
+			WitnessPath:       cfg.HA.WitnessPath,
+			WitnessHold:       cfg.HA.WitnessHoldTime.Duration,
+		}, leaseStore, eventBroker, reg)
+		if err := haManager.Start(runCtx); err != nil {
+			log.Printf("ha manager startup failed: %v", err)
+			return 1
+		}
+	}
 	var wsHub *wsapi.Hub
 	if cfg.API.WebSocket.Enabled {
 		wsHub = wsapi.NewHub(eventBroker)
@@ -382,6 +435,18 @@ func run() int {
 		MetricsPath:      metricsPath,
 		DHCPv4Enabled:    cfg.DHCP.V4.Enabled,
 		DHCPv4Listen:     cfg.DHCP.V4.Listen,
+		HAStatus: func() any {
+			if haManager == nil {
+				return map[string]any{"status": "disabled"}
+			}
+			return haManager.Status()
+		},
+		HATriggerFailover: func(_ context.Context, reason string) (any, error) {
+			if haManager == nil {
+				return nil, fmt.Errorf("ha is disabled")
+			}
+			return haManager.TriggerManualFailover(reason)
+		},
 		Dashboard: rest.DashboardConfig{
 			Enabled:  cfg.Dashboard.Enabled,
 			DistDir:  webDistDir,
@@ -648,6 +713,11 @@ func run() int {
 				log.Printf("dhcpv4 server error: %v", err)
 				return 1
 			}
+		case err := <-dhcpV6Err:
+			if err != nil {
+				log.Printf("dhcpv6 server error: %v", err)
+				return 1
+			}
 		case err := <-mcpErr:
 			if err != nil {
 				log.Printf("mcp server error: %v", err)
@@ -693,6 +763,9 @@ func run() int {
 				if webhookDispatcher != nil {
 					webhookDispatcher.Wait()
 				}
+				if haManager != nil {
+					_ = haManager.Shutdown()
+				}
 				log.Printf("monsoon stopped")
 				return 0
 			}
@@ -713,6 +786,19 @@ func pickServerIdentifier(cfg *config.Config) net.IP {
 		}
 	}
 	return net.IPv4(127, 0, 0, 1).To4()
+}
+
+func pickServerDUID(cfg *config.Config) []byte {
+	seed := strings.TrimSpace(cfg.Server.Hostname)
+	if seed == "" {
+		seed = "monsoon"
+	}
+	sum := sha256.Sum256([]byte(seed))
+	var uuid [16]byte
+	copy(uuid[:], sum[:16])
+	uuid[6] = (uuid[6] & 0x0f) | 0x40
+	uuid[8] = (uuid[8] & 0x3f) | 0x80
+	return dhcpv6.GenerateDUIDUUID(uuid)
 }
 
 func printMigrationReport(report migrate.Report) {

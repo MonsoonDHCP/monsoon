@@ -29,6 +29,7 @@ import {
   logout,
   releaseLease,
   revokeAuthToken,
+  triggerHAFailover,
   triggerDiscoveryScan,
   updateSystemConfig,
   updateUISettings,
@@ -106,6 +107,7 @@ type DashboardState = {
   refreshSystemConfig: () => Promise<void>
   clearNotifications: () => void
   saveSystemConfig: (payload: SystemConfig) => Promise<void>
+  requestManualFailover: (reason: string) => Promise<void>
 }
 
 export function useDashboardData(): DashboardState {
@@ -359,6 +361,14 @@ export function useDashboardData(): DashboardState {
     await refreshBackups()
   }, [refreshBackups])
 
+  const requestManualFailover = useCallback(
+    async (reason: string) => {
+      await triggerHAFailover(reason)
+      await load()
+    },
+    [load],
+  )
+
   const clearNotifications = useCallback(() => {
     setNotifications([])
   }, [])
@@ -462,6 +472,8 @@ export function useDashboardData(): DashboardState {
         discoveryCompleted: makeHandler("discovery.scan_completed"),
         discoveryConflict: makeHandler("discovery.conflict"),
         settingsUpdated: makeHandler("settings.ui_updated"),
+        haRoleChanged: makeHandler("ha.role_changed"),
+        haFailoverRequested: makeHandler("ha.failover_requested"),
       }
 
       fallbackSource.addEventListener("lease.released", handlers.leaseReleased)
@@ -479,6 +491,8 @@ export function useDashboardData(): DashboardState {
       fallbackSource.addEventListener("discovery.scan_completed", handlers.discoveryCompleted)
       fallbackSource.addEventListener("discovery.conflict", handlers.discoveryConflict)
       fallbackSource.addEventListener("settings.ui_updated", handlers.settingsUpdated)
+      fallbackSource.addEventListener("ha.role_changed", handlers.haRoleChanged)
+      fallbackSource.addEventListener("ha.failover_requested", handlers.haFailoverRequested)
     }
 
     let opened = false
@@ -563,6 +577,7 @@ export function useDashboardData(): DashboardState {
         refreshSystemConfig,
         clearNotifications,
         saveSystemConfig,
+        requestManualFailover,
       }
     },
     [
@@ -609,6 +624,7 @@ export function useDashboardData(): DashboardState {
       refreshSystemConfig,
       clearNotifications,
       saveSystemConfig,
+      requestManualFailover,
     ],
   )
 }

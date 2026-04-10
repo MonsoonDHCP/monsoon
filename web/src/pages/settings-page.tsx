@@ -1,4 +1,4 @@
-import { Copy, HardDriveDownload, KeyRound, LogIn, LogOut, MoonStar, Palette, RefreshCw, Save, Server, Shield, SunMedium, Trash2, UserRound } from "lucide-react"
+import { ArrowRightLeft, Copy, HardDriveDownload, KeyRound, LogIn, LogOut, MoonStar, Palette, RefreshCw, Save, Server, Shield, SunMedium, Trash2, UserRound, Workflow } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 import { useTheme } from "next-themes"
 
@@ -9,8 +9,18 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import type { UISettings } from "@/types/api"
 
+function formatDuration(ns?: number) {
+  if (!ns || ns <= 0) return "-"
+  const ms = ns / 1_000_000
+  if (ms < 1000) return `${Math.round(ms)} ms`
+  const sec = ms / 1000
+  if (sec < 60) return `${sec.toFixed(sec < 10 ? 1 : 0)} s`
+  const min = sec / 60
+  return `${min.toFixed(1)} min`
+}
+
 export function SettingsPage() {
-  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, systemConfig, backups, createBackup, refreshBackups, refreshSystemConfig, saveSystemConfig } = useDashboard()
+  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, health, systemConfig, backups, createBackup, refreshBackups, refreshSystemConfig, saveSystemConfig, requestManualFailover } = useDashboard()
   const { setTheme } = useTheme()
   const [local, setLocal] = useState<UISettings>({
     theme: "system",
@@ -23,8 +33,14 @@ export function SettingsPage() {
   const [configDraft, setConfigDraft] = useState("")
   const [configEditing, setConfigEditing] = useState(false)
   const [configError, setConfigError] = useState<string | null>(null)
+  const [haReason, setHAReason] = useState("Planned maintenance")
+  const [haActionState, setHAActionState] = useState<"idle" | "submitting" | "done" | "failed">("idle")
+  const [haActionError, setHAActionError] = useState<string | null>(null)
 
   const systemConfigJSON = useMemo(() => JSON.stringify(systemConfig ?? {}, null, 2), [systemConfig])
+  const ha = systemInfo?.ha ?? health?.components?.ha
+  const haConfig = (systemConfig?.ha as Record<string, unknown> | undefined) ?? undefined
+  const canTriggerFailover = Boolean(isAdmin && canMutate && ha?.role === "primary" && ha?.peer === "connected")
 
   useEffect(() => {
     if (settings) {
@@ -57,6 +73,19 @@ export function SettingsPage() {
       setConfigEditing(false)
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : "Invalid configuration JSON")
+    }
+  }
+
+  const triggerManualHandover = async () => {
+    try {
+      setHAActionState("submitting")
+      setHAActionError(null)
+      await requestManualFailover(haReason)
+      setHAActionState("done")
+      window.setTimeout(() => setHAActionState("idle"), 1800)
+    } catch (err) {
+      setHAActionState("failed")
+      setHAActionError(err instanceof Error ? err.message : "Manual failover failed")
     }
   }
 
@@ -349,6 +378,105 @@ export function SettingsPage() {
               </div>
             ))}
             {backups.length === 0 && <p className="text-sm text-muted-foreground">No backups found yet.</p>}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Workflow className="size-4" />
+            High availability
+          </CardTitle>
+          <CardDescription>Peer posture, sync health, and controlled handoff from the current primary node.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-2 text-sm md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              <p className="text-xs text-muted-foreground">Role</p>
+              <div className="mt-1 flex items-center justify-between gap-2">
+                <span className="font-medium capitalize text-foreground">{ha?.status === "disabled" ? "disabled" : ha?.role ?? "unknown"}</span>
+                <Badge variant={ha?.peer === "connected" ? (ha?.role === "primary" ? "success" : "default") : "warning"}>{ha?.peer ?? "unknown"}</Badge>
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              <p className="text-xs text-muted-foreground">Peer node</p>
+              <p className="mt-1 font-medium text-foreground">{ha?.peer_node ?? "-"}</p>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              <p className="text-xs text-muted-foreground">Heartbeat latency</p>
+              <p className="mt-1 font-medium text-foreground">{formatDuration(ha?.heartbeat_latency)}</p>
+            </div>
+            <div className="rounded-lg border border-border/70 bg-background/60 px-3 py-2">
+              <p className="text-xs text-muted-foreground">Sync lag</p>
+              <p className="mt-1 font-medium text-foreground">{formatDuration(ha?.sync_lag)}</p>
+            </div>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-2">
+            <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-sm">
+              <p className="font-medium text-foreground">HA config</p>
+              <div className="mt-3 space-y-2 text-muted-foreground">
+                <div className="flex items-center justify-between gap-3">
+                  <span>Mode</span>
+                  <span className="font-mono text-xs text-foreground">{String(haConfig?.mode ?? ha?.mode ?? "active-passive")}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Priority</span>
+                  <span className="font-mono text-xs text-foreground">{String(haConfig?.priority ?? ha?.priority ?? 100)}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Peer address</span>
+                  <span className="font-mono text-xs text-foreground">{String(haConfig?.peer_address ?? ha?.peer_addr ?? "-")}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Listen address</span>
+                  <span className="font-mono text-xs text-foreground">{ha?.listen_addr ?? "-"}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Witness path</span>
+                  <span className="font-mono text-xs text-foreground">{String(haConfig?.witness_path ?? ha?.witness_path ?? "-")}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Lease sync</span>
+                  <span className="font-mono text-xs text-foreground">{String(haConfig?.lease_sync ?? "false")}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Failovers observed</span>
+                  <span className="font-mono text-xs text-foreground">{ha?.failover_count ?? 0}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span>Fencing status</span>
+                  <Badge variant={ha?.fenced ? "danger" : "success"}>{ha?.fenced ? ha?.fencing_reason ?? "fenced" : "clear"}</Badge>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-sm">
+              <p className="font-medium text-foreground">Controlled handoff</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Trigger this only on the active primary node. The node enters a draining window so its peer can take over cleanly.
+              </p>
+              <input
+                className="mt-3 w-full rounded-lg border border-border/70 bg-background px-3 py-2 text-sm"
+                value={haReason}
+                onChange={(event) => setHAReason(event.target.value)}
+                placeholder="Reason for failover"
+                disabled={!isAdmin || !canMutate}
+              />
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <Button onClick={() => void triggerManualHandover()} disabled={!canTriggerFailover || haActionState === "submitting"}>
+                  <ArrowRightLeft className="mr-2 size-4" />
+                  {haActionState === "submitting" ? "Triggering..." : "Trigger manual failover"}
+                </Button>
+                {!canTriggerFailover ? <Badge variant="warning">Available only on connected primary node</Badge> : null}
+                {haActionState === "done" ? <Badge variant="success">Failover requested</Badge> : null}
+              </div>
+              {ha?.manual_step_down_until ? (
+                <p className="mt-3 text-xs text-amber-200">Manual handoff window active until {new Date(ha.manual_step_down_until).toLocaleString()}.</p>
+              ) : null}
+              {haActionError ? <p className="mt-3 text-xs text-rose-300">{haActionError}</p> : null}
+            </div>
           </div>
         </CardContent>
       </Card>

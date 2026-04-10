@@ -11,6 +11,7 @@ import type {
   DiscoveryScanResponse,
   DiscoveryStatus,
   HealthResponse,
+  HAStatus,
   SystemBackup,
   SystemConfig,
   SystemInfo,
@@ -71,6 +72,13 @@ export function fetchHealth() {
 
 export function fetchSystemInfo() {
   return request<SystemInfo>("/api/v1/system/info")
+}
+
+export function triggerHAFailover(reason: string) {
+  return request<HAStatus>("/api/v1/ha/failover", {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  })
 }
 
 export function fetchSystemBackups() {

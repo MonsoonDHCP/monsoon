@@ -459,3 +459,48 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 		t.Fatalf("system backup create status mismatch: got %d body=%s", createRR.Code, createRR.Body.String())
 	}
 }
+
+func TestHARoutesStatusAndManualFailover(t *testing.T) {
+	mux := http.NewServeMux()
+	if err := RegisterRoutes(mux, RouterDeps{
+		Version: "test",
+		HAStatus: func() any {
+			return map[string]any{
+				"node":      "alpha",
+				"mode":      "active-passive",
+				"role":      "primary",
+				"peer":      "connected",
+				"peer_node": "beta",
+			}
+		},
+		HATriggerFailover: func(_ context.Context, reason string) (any, error) {
+			return map[string]any{
+				"status": "accepted",
+				"reason": reason,
+				"role":   "secondary",
+			}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register routes failed: %v", err)
+	}
+
+	statusRR := httptest.NewRecorder()
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/ha/status", nil)
+	mux.ServeHTTP(statusRR, statusReq)
+	if statusRR.Code != http.StatusOK {
+		t.Fatalf("ha status mismatch: got %d body=%s", statusRR.Code, statusRR.Body.String())
+	}
+	if !bytes.Contains(statusRR.Body.Bytes(), []byte(`"role":"primary"`)) {
+		t.Fatalf("expected primary role in ha status: %s", statusRR.Body.String())
+	}
+
+	failoverRR := httptest.NewRecorder()
+	failoverReq := httptest.NewRequest(http.MethodPost, "/api/v1/ha/failover", bytes.NewReader([]byte(`{"reason":"maintenance"}`)))
+	mux.ServeHTTP(failoverRR, failoverReq)
+	if failoverRR.Code != http.StatusAccepted {
+		t.Fatalf("ha failover mismatch: got %d body=%s", failoverRR.Code, failoverRR.Body.String())
+	}
+	if !bytes.Contains(failoverRR.Body.Bytes(), []byte(`"reason":"maintenance"`)) {
+		t.Fatalf("expected manual failover reason in response: %s", failoverRR.Body.String())
+	}
+}

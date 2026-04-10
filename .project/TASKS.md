@@ -171,16 +171,16 @@
 
 ## Phase 8: DHCPv6 (Tasks #92–#101)
 
-- [ ] #92 — Implement `internal/dhcpv6/packet.go`: DHCPv6 packet encode/decode — message type (1 byte), transaction ID (3 bytes), options (type:2 + length:2 + data format per RFC 8415)
-- [ ] #93 — Implement `internal/dhcpv6/options.go`: DHCPv6 option encode/decode — Client Identifier (1), Server Identifier (2), IA_NA (3), IA_TA (4), IA_PD (25), Status Code (13), Rapid Commit (14), DNS Servers (23), Domain List (24)
-- [ ] #94 — Implement `internal/dhcpv6/duid.go`: DUID generation and parsing — DUID-LLT (link-layer + time), DUID-EN (enterprise number), DUID-LL (link-layer), DUID-UUID
-- [ ] #95 — Implement `internal/dhcpv6/pool.go`: IPv6 address pool — allocate from configured range, bitmap tracking for /64 pools, prefix delegation pool for IA_PD
-- [ ] #96 — Implement `internal/dhcpv6/handler.go` Solicit/Advertise: Receive Solicit on multicast ff02::1:2 port 547 → allocate address → send Advertise with IA_NA/IA_PD options
-- [ ] #97 — Implement `internal/dhcpv6/handler.go` Request/Reply: Validate Request matches Advertise → create binding → send Reply with confirmed addresses/prefixes
-- [ ] #98 — Implement `internal/dhcpv6/handler.go` Renew/Rebind/Release/Decline: Renew → extend lifetime. Rebind → re-verify. Release → free address. Decline → mark conflict.
-- [ ] #99 — Implement `internal/dhcpv6/handler.go` Information-Request: Stateless mode — return configuration options (DNS servers, domain) without address assignment
-- [ ] #100 — Implement `internal/dhcpv6/pd.go`: Prefix delegation — allocate /48, /56, or /64 prefixes from configured pool, track delegated prefixes, support sub-delegation
-- [ ] #101 — Implement `internal/dhcpv6/relay.go` + `internal/dhcpv6/server.go`: Relay-Forward/Relay-Reply message handling, nested relay support. Server orchestrator: UDP listener on port 547, dispatch loop, graceful shutdown.
+- [x] #92 — Implement `internal/dhcpv6/packet.go`: DHCPv6 packet encode/decode — message type (1 byte), transaction ID (3 bytes), options (type:2 + length:2 + data format per RFC 8415)
+- [x] #93 — Implement `internal/dhcpv6/options.go`: DHCPv6 option encode/decode — Client Identifier (1), Server Identifier (2), IA_NA (3), IA_TA (4), IA_PD (25), Status Code (13), Rapid Commit (14), DNS Servers (23), Domain List (24)
+- [x] #94 — Implement `internal/dhcpv6/duid.go`: DUID generation and parsing — DUID-LLT (link-layer + time), DUID-EN (enterprise number), DUID-LL (link-layer), DUID-UUID
+- [x] #95 — Implement `internal/dhcpv6/pool.go`: IPv6 address pool — allocate from configured range, bitmap tracking for /64 pools, prefix delegation pool for IA_PD
+- [x] #96 — Implement `internal/dhcpv6/handler.go` Solicit/Advertise: Receive Solicit on multicast ff02::1:2 port 547 → allocate address → send Advertise with IA_NA/IA_PD options
+- [x] #97 — Implement `internal/dhcpv6/handler.go` Request/Reply: Validate Request matches Advertise → create binding → send Reply with confirmed addresses/prefixes
+- [x] #98 — Implement `internal/dhcpv6/handler.go` Renew/Rebind/Release/Decline: Renew → extend lifetime. Rebind → re-verify. Release → free address. Decline → mark conflict.
+- [x] #99 — Implement `internal/dhcpv6/handler.go` Information-Request: Stateless mode — return configuration options (DNS servers, domain) without address assignment
+- [x] #100 — Implement `internal/dhcpv6/pd.go`: Prefix delegation — allocate /48, /56, or /64 prefixes from configured pool, track delegated prefixes, support sub-delegation
+- [x] #101 — Implement `internal/dhcpv6/relay.go` + `internal/dhcpv6/server.go`: Relay-Forward/Relay-Reply message handling, nested relay support. Server orchestrator: UDP listener on port 547, dispatch loop, graceful shutdown.
 
 ---
 
@@ -214,14 +214,14 @@
 
 ## Phase 10: HA & Failover (Tasks #114–#121)
 
-- [ ] #114 — Implement `internal/ha/heartbeat.go`: Peer heartbeat — TCP connection, periodic ping/pong (default 1s), loss detection with configurable timeout (default 10s)
-- [ ] #115 — Implement `internal/ha/sync.go` initial sync: Full snapshot transfer — primary sends complete lease database snapshot to secondary on first connect
+- [x] #114 — Implement `internal/ha/heartbeat.go`: Peer heartbeat — TCP connection, periodic ping/pong (default 1s), loss detection with configurable timeout (default 10s)
+- [x] #115 — Implement `internal/ha/sync.go` initial sync: Full snapshot transfer — primary sends complete lease database snapshot to secondary on first connect
 - [ ] #116 — Implement `internal/ha/sync.go` incremental sync: WAL streaming — primary streams WAL entries to secondary in real-time, sequence number tracking for consistency
-- [ ] #117 — Implement `internal/ha/election.go`: Leader election — priority-based (lower wins), handle network partition, fencing mechanism to prevent split-brain
-- [ ] #118 — Implement `internal/ha/failover.go` active-passive: Failover orchestrator — detect primary failure, promote secondary, take over VIP (gratuitous ARP), resume DHCP serving
+- [x] #117 — Implement `internal/ha/election.go`: Leader election — priority-based (lower wins), handle network partition, fencing mechanism to prevent split-brain
+- [x] #118 — Implement `internal/ha/failover.go` active-passive: Failover orchestrator — detect primary failure, promote secondary, take over VIP (gratuitous ARP), resume DHCP serving
 - [ ] #119 — Implement `internal/ha/failover.go` load-sharing: Split-scope mode — configure non-overlapping pool ranges per peer, bidirectional lease sync, graceful takeover of partner's range on failure
-- [ ] #120 — Add HA status to dashboard: Peer status indicator, sync lag display, manual failover trigger button, HA configuration page
-- [ ] #121 — Add HA metrics: `monsoon_ha_heartbeat_latency_seconds`, `monsoon_ha_lease_sync_lag_seconds`, `monsoon_ha_failover_total`, `monsoon_ha_peer_state`
+- [x] #120 — Add HA status to dashboard: Peer status indicator, sync lag display, manual failover trigger button, HA configuration page
+- [x] #121 — Add HA metrics: `monsoon_ha_heartbeat_latency_seconds`, `monsoon_ha_lease_sync_lag_seconds`, `monsoon_ha_failover_total`, `monsoon_ha_peer_state`
 
 ---
 

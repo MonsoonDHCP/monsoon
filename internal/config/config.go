@@ -183,11 +183,14 @@ type SessionAuthConfig struct {
 type HAConfig struct {
 	Enabled           bool     `yaml:"enabled"`
 	Mode              string   `yaml:"mode"`
+	Priority          int      `yaml:"priority"`
 	PeerAddress       string   `yaml:"peer_address"`
 	HeartbeatInterval Duration `yaml:"heartbeat_interval"`
 	FailoverTimeout   Duration `yaml:"failover_timeout"`
 	LeaseSync         bool     `yaml:"lease_sync"`
 	SharedSecret      string   `yaml:"shared_secret"`
+	WitnessPath       string   `yaml:"witness_path"`
+	WitnessHoldTime   Duration `yaml:"witness_hold_time"`
 }
 
 type MetricsConfig struct {
@@ -308,9 +311,11 @@ func DefaultConfig() *Config {
 		HA: HAConfig{
 			Enabled:           false,
 			Mode:              "active-passive",
+			Priority:          100,
 			HeartbeatInterval: Duration{Duration: time.Second},
 			FailoverTimeout:   Duration{Duration: 10 * time.Second},
 			LeaseSync:         true,
+			WitnessHoldTime:   Duration{Duration: 15 * time.Second},
 		},
 		Metrics: MetricsConfig{
 			Prometheus: PrometheusConfig{Enabled: true, Path: "/metrics"},

@@ -37,29 +37,32 @@ type SystemBackup struct {
 }
 
 type RouterDeps struct {
-	LeaseStore       lease.Store
-	IPAMEngine       *ipam.Engine
-	DiscoveryEngine  *discovery.Engine
-	AuthService      *auth.Service
-	AuthSecureCookie bool
-	AuditLogger      *audit.Logger
-	Version          string
-	MetricsPath      string
-	DHCPv4Enabled    bool
-	DHCPv4Listen     string
-	DHCPv4Running    func() bool
-	Dashboard        DashboardConfig
-	UISettings       uisettings.UIStore
-	EventBroker      *events.Broker
-	StartedAt        time.Time
-	ConfigSnapshot   func() any
-	UpdateConfig     func(context.Context, map[string]any) (any, error)
-	CreateBackup     func(context.Context) (SystemBackup, error)
-	ListBackups      func(context.Context) ([]SystemBackup, error)
+	LeaseStore        lease.Store
+	IPAMEngine        *ipam.Engine
+	DiscoveryEngine   *discovery.Engine
+	AuthService       *auth.Service
+	AuthSecureCookie  bool
+	AuditLogger       *audit.Logger
+	Version           string
+	MetricsPath       string
+	DHCPv4Enabled     bool
+	DHCPv4Listen      string
+	DHCPv4Running     func() bool
+	HAStatus          func() any
+	HATriggerFailover func(context.Context, string) (any, error)
+	Dashboard         DashboardConfig
+	UISettings        uisettings.UIStore
+	EventBroker       *events.Broker
+	StartedAt         time.Time
+	ConfigSnapshot    func() any
+	UpdateConfig      func(context.Context, map[string]any) (any, error)
+	CreateBackup      func(context.Context) (SystemBackup, error)
+	ListBackups       func(context.Context) ([]SystemBackup, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
 	registerSystemRoutes(mux, deps)
+	registerHARoutes(mux, deps)
 
 	if deps.LeaseStore != nil {
 		registerLeaseRoutes(mux, deps.LeaseStore, deps.IPAMEngine, deps.EventBroker, deps.AuditLogger)
@@ -124,6 +127,7 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 					"listen":  deps.DHCPv4Listen,
 					"running": running,
 				},
+				"ha": deps.HAStatusValue(),
 			},
 		}, nil)
 	})
@@ -140,6 +144,7 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 			"started_at": startedAt,
 			"now":        now,
 			"uptime_sec": uptimeSec,
+			"ha":         deps.HAStatusValue(),
 			"runtime": map[string]any{
 				"goos":       runtime.GOOS,
 				"goarch":     runtime.GOARCH,
@@ -242,6 +247,58 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 		}
 		WriteJSON(w, http.StatusOK, backup, nil)
 	})
+}
+
+func registerHARoutes(mux *http.ServeMux, deps RouterDeps) {
+	mux.HandleFunc("GET /api/v1/ha/status", func(w http.ResponseWriter, _ *http.Request) {
+		WriteJSON(w, http.StatusOK, deps.HAStatusValue(), nil)
+	})
+
+	mux.HandleFunc("POST /api/v1/ha/failover", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
+		if deps.HATriggerFailover == nil {
+			WriteError(w, http.StatusNotImplemented, "ha_failover_unavailable", "manual HA failover is not configured")
+			return
+		}
+		var payload struct {
+			Reason string `json:"reason"`
+		}
+		if err := decodeJSONBody(r, &payload); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
+			return
+		}
+		status, err := deps.HATriggerFailover(r.Context(), payload.Reason)
+		if err != nil {
+			WriteError(w, http.StatusConflict, "ha_failover_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusAccepted, status, nil)
+		logAuditEntry(r, deps.AuditLogger, audit.Entry{
+			Action:     "ha.failover.triggered",
+			ObjectType: "ha",
+			ObjectID:   "cluster",
+			Actor:      requestActor(r),
+			Source:     "rest",
+			After: map[string]any{
+				"reason": strings.TrimSpace(payload.Reason),
+				"status": status,
+			},
+		})
+	})
+}
+
+func (deps RouterDeps) HAStatusValue() any {
+	if deps.HAStatus == nil {
+		return map[string]any{
+			"status": "disabled",
+		}
+	}
+	if value := deps.HAStatus(); value != nil {
+		return value
+	}
+	return map[string]any{"status": "unknown"}
 }
 
 func sanitizeConfigSnapshot(input any) any {

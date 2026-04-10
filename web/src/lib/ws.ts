@@ -23,6 +23,7 @@ const DEFAULT_EVENTS = [
   "subnet.*",
   "reservation.*",
   "settings.*",
+  "ha.*",
 ]
 
 export function connectLiveSocket(options: SocketOptions): SocketClient {

@@ -75,6 +75,19 @@ func Validate(cfg *Config) error {
 	if cfg.Auth.Enabled && strings.TrimSpace(cfg.Auth.Type) == "" {
 		errs = append(errs, "auth.type is required when auth.enabled=true")
 	}
+	if cfg.HA.Enabled {
+		if strings.TrimSpace(cfg.HA.PeerAddress) == "" {
+			errs = append(errs, "ha.peer_address is required when ha.enabled=true")
+		} else if err := validateListenAddr(cfg.HA.PeerAddress); err != nil {
+			errs = append(errs, "ha.peer_address: "+err.Error())
+		}
+		if cfg.HA.Priority <= 0 {
+			errs = append(errs, "ha.priority must be > 0")
+		}
+		if cfg.HA.WitnessHoldTime.Duration < 0 {
+			errs = append(errs, "ha.witness_hold_time must be >= 0")
+		}
+	}
 
 	prefixes := make([]netip.Prefix, 0, len(cfg.Subnets))
 	for idx, s := range cfg.Subnets {

@@ -9,6 +9,7 @@ export type HealthResponse = {
       listen?: string
       running?: boolean
     }
+    ha?: HAStatus
   }
 }
 
@@ -23,6 +24,28 @@ export type SystemInfo = {
     gomaxprocs?: number
     num_cpu?: number
   }
+  ha?: HAStatus
+}
+
+export type HAStatus = {
+  status?: string
+  node?: string
+  mode?: string
+  priority?: number
+  role?: string
+  peer?: string
+  peer_node?: string
+  last_heartbeat_at?: string
+  heartbeat_latency?: number
+  sync_lag?: number
+  failover_count?: number
+  listen_addr?: string
+  peer_addr?: string
+  fenced?: boolean
+  fencing_reason?: string
+  witness_path?: string
+  witness_owner?: string
+  manual_step_down_until?: string
 }
 
 export type SystemBackup = {

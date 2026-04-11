@@ -70,6 +70,20 @@ func (m *SessionManager) Revoke(_ context.Context, id string) {
 	delete(m.sessions, id)
 }
 
+func (m *SessionManager) RevokeByUsername(_ context.Context, username string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	revoked := 0
+	for id, entry := range m.sessions {
+		if entry.Identity.Username == username {
+			delete(m.sessions, id)
+			revoked++
+		}
+	}
+	return revoked
+}
+
 func (m *SessionManager) CleanupExpired() {
 	now := time.Now().UTC()
 	m.mu.Lock()

@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/monsoondhcp/monsoon/internal/discovery"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
@@ -14,6 +13,42 @@ import (
 type emptyMessage struct{}
 
 func (emptyMessage) marshalProto() []byte { return nil }
+
+type systemHealthResponse struct {
+	Status      string
+	Ready       bool
+	Version     string
+	Uptime      string
+	PayloadJSON string
+}
+
+func (m systemHealthResponse) marshalProto() []byte {
+	var out []byte
+	out = appendString(out, 1, m.Status)
+	out = appendBool(out, 2, m.Ready)
+	out = appendString(out, 3, m.Version)
+	out = appendString(out, 4, m.Uptime)
+	out = appendString(out, 5, m.PayloadJSON)
+	return out
+}
+
+func (m *systemHealthResponse) unmarshalProto(data []byte) error {
+	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
+		switch field {
+		case 1:
+			m.Status = string(raw)
+		case 2:
+			m.Ready = parseBool(value)
+		case 3:
+			m.Version = string(raw)
+		case 4:
+			m.Uptime = string(raw)
+		case 5:
+			m.PayloadJSON = string(raw)
+		}
+		return nil
+	})
+}
 
 type cidrRequest struct {
 	CIDR string
@@ -780,8 +815,4 @@ func mustStrings(value any) []string {
 	default:
 		return nil
 	}
-}
-
-func unixNow() int64 {
-	return time.Now().UTC().Unix()
 }

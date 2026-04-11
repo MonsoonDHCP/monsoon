@@ -65,11 +65,12 @@ Network IP management today is fragmented across multiple tools:
 - Dashboard, subnet tree, visual IP grid, lease browser, reservations, discovery, audit, settings
 
 ### Operations
-- **Hot Reload** — Configuration refresh via `SIGHUP`
-- **HA / Failover** — Active-passive or split-scope load sharing, TCP lease synchronization
-- **Prometheus Metrics** — DHCP, IPAM, storage, API, WebSocket, HA metrics
-- **Structured Logging** — Component-level JSON logs
-- **Migration Tools** — ISC DHCP, Kea, phpIPAM, NetBox, generic CSV import
+- **Hot Reload** - `SIGHUP` live-applies REST/auth safety controls: CORS allowlist, trusted proxies, general/auth rate limits, auth enforcement, and secure session cookie
+- **Restart Signaling** - Reloaded changes to listeners, TLS, DHCP/discovery/HA runtime, auth backend/session lifetime, metrics path, and webhooks are accepted but reported as restart-required
+- **HA / Failover** - Active-passive or split-scope load sharing, TCP lease synchronization
+- **Prometheus Metrics** - DHCP, IPAM, storage, API, WebSocket, HA metrics
+- **Structured Logging** - Component-level JSON logs
+- **Migration Tools** - ISC DHCP, Kea, phpIPAM, NetBox, generic CSV import
 
 ---
 
@@ -122,24 +123,44 @@ Network IP management today is fragmented across multiple tools:
 
 ## Quick Start
 
-### Backend
+### 1. Initialize a config file
 
 ```bash
-go run ./cmd/monsoon --config ./configs/monsoon.yaml
+go run ./cmd/monsoon --init --config ./configs/monsoon.yaml
 ```
 
-Endpoints:
-- Health — `GET http://localhost:8067/api/v1/system/health`
-- Metrics — `GET http://localhost:8067/metrics`
-- REST API — `http://localhost:8067/api/v1/`
+`--init` only writes a default config file. It does not create an admin user or seed a password.
 
-Serve the React dashboard from the same backend port:
+### 2. Start the backend
 
 ```bash
 go run ./cmd/monsoon --config ./configs/monsoon.yaml --web-dist ./web/dist
 ```
 
-### Frontend (development)
+Default local endpoints:
+- Health: `GET http://localhost:8067/api/v1/system/health`
+- Readiness: `GET http://localhost:8067/api/v1/system/ready`
+- Metrics: `GET http://localhost:8067/metrics`
+- REST API: `http://localhost:8067/api/v1/`
+- Dashboard: `http://localhost:8067/`
+
+If `api.rest.tls_cert_file` and `api.rest.tls_key_file` are both set, Monsoon serves the REST API, dashboard, SSE, and WebSocket endpoint over HTTPS instead. `api.grpc.*` and `api.mcp.*` expose separate TLS settings for those listeners.
+
+### 3. Complete first-time admin bootstrap
+
+With local auth enabled and `auth.local.admin_password_hash` left empty, Monsoon starts in first-run mode and waits for exactly one bootstrap request:
+
+```bash
+curl -X POST http://localhost:8067/api/v1/auth/bootstrap \
+  -H "Content-Type: application/json" \
+  -d "{\"username\":\"admin\",\"password\":\"change-me-now\"}"
+```
+
+The bootstrap route succeeds only when no local users exist yet. After the first admin is created, the same route returns `409 Conflict`.
+
+If you prefer a pre-seeded admin instead of bootstrap, set `auth.local.admin_password_hash` to a bcrypt hash before startup.
+
+### 4. Frontend development
 
 ```bash
 cd web
@@ -147,11 +168,29 @@ npm install
 npm run dev
 ```
 
-### Frontend build
+When using the Vite dev server, explicitly allow its origin in `api.rest.cors_origins`, for example:
+
+```yaml
+api:
+  rest:
+    cors_origins:
+      - http://localhost:5173
+```
+
+An empty `cors_origins` list means browser cross-origin requests are not allowed.
+
+### 5. Frontend build
 
 ```bash
 cd web
 npm run build
+```
+
+Run the frontend test suite with:
+
+```bash
+cd web
+npm test
 ```
 
 ### CLI Flags
@@ -160,19 +199,19 @@ npm run build
 monsoon [flags]
 
   -c, --config string    Configuration file path
-  -d, --data-dir string  Data directory
-  -v, --version          Print version and exit
-      --init             Initialize configuration and admin password
+  -d, --data-dir string  Data directory override
+      --web-dist string  Web dashboard dist directory
+      --version          Print version and exit
+      --init             Initialize configuration file and exit
       --check-config     Validate configuration and exit
-      --export-config    Export current configuration to stdout
-      --backup           Create backup and exit
-      --restore string   Restore from backup file
-      --migrate          Run data migrations
+      --export-config    Export resolved configuration to stdout
+      --backup           Create backup snapshot and exit
+      --restore string   Restore snapshot file
+      --migrate          Run migrations and exit
       --debug            Enable debug logging
 ```
 
 ---
-
 ## Frontend Stack
 
 - **React 19** — Modern function components, concurrent features
@@ -227,9 +266,20 @@ Base URL: `http://localhost:8067/api/v1`
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/system/health` | Health check |
-| GET/PUT | `/system/config` | Configuration (hot reload) |
+| GET | `/system/ready` | Readiness probe |
+| GET | `/system/info` | Runtime info plus `config_reload` restart-pending status |
+| GET/PUT | `/system/config` | Configuration snapshot/update; response `meta.reload` shows hot-reload vs restart-required state |
 | POST | `/system/backup` | Create snapshot |
 | GET | `/system/metrics` | Prometheus metrics |
+
+### gRPC Health
+
+- `monsoon.v1.SystemService/GetHealth`
+- `monsoon.v1.SystemService/GetReadiness`
+
+### MCP Health
+
+- `monsoon_get_health` now returns the same core readiness model used by the REST and gRPC surfaces.
 
 ### Real-time (WebSocket)
 
@@ -247,56 +297,75 @@ For the complete endpoint list, see [.project/SPECIFICATION.md](.project/SPECIFI
 
 ## Configuration
 
-Monsoon is configured via a YAML file, and every value can be overridden via `MONSOON_*` environment variables.
+Monsoon is configured via YAML, and values can be overridden with `MONSOON_*` environment variables.
+
+Security-sensitive defaults to be aware of:
+- `api.rest.cors_origins: []` blocks browser cross-origin access until you allow explicit origins.
+- `api.rest.trusted_proxies` must list the reverse proxy IPs/CIDRs before Monsoon will honor `X-Forwarded-For`, `X-Forwarded-Proto`, or `X-Forwarded-Host`.
+- `api.rest.tls_cert_file` and `api.rest.tls_key_file` must be set together to enable HTTPS.
+- `api.grpc.tls_cert_file` / `api.grpc.tls_key_file` and `api.mcp.tls_cert_file` / `api.mcp.tls_key_file` follow the same all-or-nothing rule.
+- `api.rest.auth_rate_limit` applies a stricter per-IP limit to login, bootstrap, logout, password, and token mutation routes on top of the general API limiter.
+- `auth.session.secure: true` means browsers will only send the session cookie over HTTPS.
+- `auth.local.max_failed_attempts` and `auth.local.lockout_duration` add a user-level temporary lockout after repeated local password failures.
+- Password changes revoke existing browser sessions for that user and rotate the current session cookie automatically.
+- Leaving `auth.local.admin_password_hash` empty no longer creates a default admin account. Use bootstrap or provide a bcrypt hash.
+- REST responses include defensive headers by default, including CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and HSTS when the request is served over HTTPS or arrives through an HTTPS reverse proxy.
+- `/metrics` now exports auth outcome counters and auth rate-limit counters in addition to the existing HA metrics.
+- `/metrics` also exports low-cardinality `monsoon_security_events_total{event,surface}` counters for alerting on auth failures, account lockouts, CSRF rejects, and auth rate limits.
+- Session-cookie authenticated unsafe requests are rejected when they arrive as cross-site browser requests; same-origin browser calls and non-browser token clients continue to work.
+- REST responses include `X-Request-ID`, and HTTP access logs now capture request ID, status, remote IP, actor, auth type, and structured error codes for correlation.
+- `/api/v1/audit` now also records security-relevant auth failures such as invalid logins, temporary account lockouts, CSRF rejections, and auth endpoint rate limits.
 
 ```yaml
 server:
-  hostname: "monsoon-01"
-  data_dir: "/var/lib/monsoon"
-  log_level: "info"
+  hostname: monsoon-01
+  data_dir: /var/lib/monsoon
+  log_level: info
 
 dhcp:
   v4:
     enabled: true
-    listen: "0.0.0.0:67"
-    interface: "eth0"
+    listen: 0.0.0.0:67
+    interface: eth0
     authoritative: true
-  default_lease_time: "12h"
-  max_lease_time: "24h"
-
-subnets:
-  - cidr: "10.0.1.0/24"
-    name: "Server VLAN"
-    vlan: 10
-    gateway: "10.0.1.1"
-    dns: ["10.0.1.2", "8.8.8.8"]
-    dhcp:
-      enabled: true
-      pool_start: "10.0.1.50"
-      pool_end: "10.0.1.200"
-      lease_time: "8h"
-    reservations:
-      - mac: "AA:BB:CC:DD:EE:01"
-        ip: "10.0.1.10"
-        hostname: "web-server-01"
-
-ipam:
-  discovery:
-    enabled: true
-    default_interval: "1h"
-    methods: ["arp", "ping"]
-    conflict_detection: true
-    rogue_dhcp_detection: true
+  default_lease_time: 12h
+  max_lease_time: 24h
 
 api:
-  rest:  { enabled: true, listen: ":8067" }
-  grpc:  { enabled: true, listen: ":9067" }
-  mcp:   { enabled: true, listen: ":7067" }
-
-metrics:
-  prometheus:
+  rest:
     enabled: true
-    path: "/metrics"
+    listen: :8067
+    cors_origins:
+      - http://localhost:5173
+    trusted_proxies:
+      - 127.0.0.1/32
+    rate_limit: 100
+    auth_rate_limit: 5
+    tls_cert_file: /etc/monsoon/tls/server.crt
+    tls_key_file: /etc/monsoon/tls/server.key
+  grpc:
+    enabled: true
+    listen: :9067
+    tls_cert_file: /etc/monsoon/tls/server.crt
+    tls_key_file: /etc/monsoon/tls/server.key
+  mcp:
+    enabled: true
+    listen: :7067
+    tls_cert_file: /etc/monsoon/tls/server.crt
+    tls_key_file: /etc/monsoon/tls/server.key
+
+auth:
+  enabled: true
+  type: local
+  local:
+    admin_username: admin
+    admin_password_hash: ""
+    max_failed_attempts: 5
+    lockout_duration: 15m
+  session:
+    duration: 24h
+    cookie_name: monsoon_session
+    secure: true
 ```
 
 Environment variable examples:
@@ -308,8 +377,9 @@ MONSOON_API_REST_LISTEN=:8067
 MONSOON_LOG_LEVEL=debug
 ```
 
----
+For same-origin deployments behind a reverse proxy, keep `cors_origins: []`, set `api.rest.trusted_proxies` to that proxy's source IP/CIDR, and terminate TLS at the proxy or directly in Monsoon.
 
+---
 ## Deployment
 
 ### Systemd
@@ -442,6 +512,10 @@ Current foundation already in place:
 - Configuration schema + defaults + validation
 - `MONSOON_*` environment variable override system
 - Hot-reload manager triggered by `SIGHUP`
+- Live reload currently applies REST/auth runtime controls without restart: CORS allowlist, trusted proxies, general/auth rate limits, auth enforcement, secure session cookie
+- Reloaded settings that change listeners, TLS, DHCP/discovery/HA runtime, auth backend/session lifetime, metrics path, or webhook dispatcher are accepted into config and reported as restart-required
+- `GET /api/v1/system/info` exposes `config_reload`
+- `GET/PUT /api/v1/system/config` include reload status under `meta.reload`
 - Storage foundation: WAL + sorted KV tree + snapshots + engine facade
 - DHCPv4 packet/options/handler/server baseline
 - Lease state/store/expiry sweeper
@@ -480,3 +554,4 @@ Apache 2.0 — see the `LICENSE` file for details.
 ## Full Specification
 
 For every detail — protocol coverage, lease state machine, storage layout, HA protocol, security model, webhook format — see [.project/SPECIFICATION.md](.project/SPECIFICATION.md).
+

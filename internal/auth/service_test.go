@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,8 +18,8 @@ func TestLocalAuthAndSessionFlow(t *testing.T) {
 	defer eng.Close()
 
 	svc := NewService(eng, ServiceOptions{CookieName: "test_session", SessionDuration: time.Hour})
-	if err := svc.EnsureAdmin(context.Background(), "admin", ""); err != nil {
-		t.Fatalf("ensure admin: %v", err)
+	if err := svc.BootstrapAdmin(context.Background(), "admin", "admin"); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
 	}
 
 	identity, err := svc.AuthenticateLocal(context.Background(), "admin", "admin")
@@ -39,6 +40,84 @@ func TestLocalAuthAndSessionFlow(t *testing.T) {
 	}
 	if validated.Username != "admin" {
 		t.Fatalf("unexpected username: %s", validated.Username)
+	}
+}
+
+func TestBootstrapAdminOnlyAllowedOnce(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeUsers, treeTokens, treeTokensByHash})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	svc := NewService(eng, ServiceOptions{})
+	if err := svc.BootstrapAdmin(context.Background(), "admin", "first-pass"); err != nil {
+		t.Fatalf("first bootstrap failed: %v", err)
+	}
+	if err := svc.BootstrapAdmin(context.Background(), "admin2", "second-pass"); err != ErrBootstrapUnavailable {
+		t.Fatalf("expected ErrBootstrapUnavailable, got %v", err)
+	}
+}
+
+func TestRevokeSessionsForUserRemovesOnlyMatchingSessions(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeUsers, treeTokens, treeTokensByHash})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	svc := NewService(eng, ServiceOptions{SessionDuration: time.Hour})
+
+	adminSession, _, err := svc.CreateSession(context.Background(), Identity{Username: "admin", Role: DefaultRoleAdmin})
+	if err != nil {
+		t.Fatalf("create admin session: %v", err)
+	}
+	secondAdminSession, _, err := svc.CreateSession(context.Background(), Identity{Username: "admin", Role: DefaultRoleAdmin})
+	if err != nil {
+		t.Fatalf("create second admin session: %v", err)
+	}
+	operatorSession, _, err := svc.CreateSession(context.Background(), Identity{Username: "operator", Role: DefaultRoleOperator})
+	if err != nil {
+		t.Fatalf("create operator session: %v", err)
+	}
+
+	if revoked := svc.RevokeSessionsForUser(context.Background(), "admin"); revoked != 2 {
+		t.Fatalf("expected 2 revoked admin sessions, got %d", revoked)
+	}
+	if _, err := svc.ValidateSession(context.Background(), adminSession); err == nil {
+		t.Fatalf("expected first admin session to be revoked")
+	}
+	if _, err := svc.ValidateSession(context.Background(), secondAdminSession); err == nil {
+		t.Fatalf("expected second admin session to be revoked")
+	}
+	if _, err := svc.ValidateSession(context.Background(), operatorSession); err != nil {
+		t.Fatalf("expected operator session to remain valid, got %v", err)
+	}
+}
+
+func TestAuthenticateLocalLocksAfterRepeatedFailures(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeUsers, treeTokens, treeTokensByHash})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	svc := NewService(eng, ServiceOptions{
+		MaxFailedAttempts: 2,
+		LockoutDuration:   time.Minute,
+	})
+	if err := svc.BootstrapAdmin(context.Background(), "admin", "correct-pass"); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
+	}
+
+	if _, err := svc.AuthenticateLocal(context.Background(), "admin", "wrong-pass"); !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials on first failure, got %v", err)
+	}
+	if _, err := svc.AuthenticateLocal(context.Background(), "admin", "wrong-pass"); !errors.Is(err, ErrAccountLocked) {
+		t.Fatalf("expected account to be locked on second failure, got %v", err)
+	}
+	if _, err := svc.AuthenticateLocal(context.Background(), "admin", "correct-pass"); !errors.Is(err, ErrAccountLocked) {
+		t.Fatalf("expected account to remain locked, got %v", err)
 	}
 }
 

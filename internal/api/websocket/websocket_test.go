@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"io"
 	"net"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	restapi "github.com/monsoondhcp/monsoon/internal/api/rest"
+	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/events"
 )
 
@@ -97,7 +100,53 @@ func TestHubWildcardSubscriptionReceivesCanonicalEvent(t *testing.T) {
 	}
 }
 
+func TestHubRejectsCrossOriginWhenAuthIsEnforced(t *testing.T) {
+	broker := events.NewBroker(8)
+	hub := NewHub(broker)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := restapi.WithIdentity(restapi.WithAuthEnforcement(r.Context(), true), auth.Identity{
+			Username: "admin",
+			Role:     auth.DefaultRoleAdmin,
+		})
+		hub.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
+	defer ts.Close()
+
+	status, _, _ := dialWebSocketHandshake(t, ts.URL, map[string]string{
+		"Origin": "https://evil.example",
+	})
+	if !strings.Contains(status, "403") {
+		t.Fatalf("expected 403 for cross-origin websocket, got %s", status)
+	}
+}
+
+func TestHubRejectsMissingIdentityWhenAuthIsEnforced(t *testing.T) {
+	broker := events.NewBroker(8)
+	hub := NewHub(broker)
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := restapi.WithAuthEnforcement(r.Context(), true)
+		hub.Handler().ServeHTTP(w, r.WithContext(ctx))
+	}))
+	defer ts.Close()
+
+	status, _, _ := dialWebSocketHandshake(t, ts.URL, nil)
+	if !strings.Contains(status, "401") {
+		t.Fatalf("expected 401 for missing identity, got %s", status)
+	}
+}
+
 func mustDialWebSocket(t *testing.T, serverURL string) (net.Conn, *bufio.Reader) {
+	t.Helper()
+	status, conn, reader := dialWebSocketHandshake(t, serverURL, nil)
+	if !strings.Contains(status, "101") {
+		t.Fatalf("unexpected handshake status: %s", status)
+	}
+	return conn, reader
+}
+
+func dialWebSocketHandshake(t *testing.T, serverURL string, headers map[string]string) (string, net.Conn, *bufio.Reader) {
 	t.Helper()
 	address := strings.TrimPrefix(serverURL, "http://")
 	conn, err := net.Dial("tcp", address)
@@ -115,7 +164,11 @@ func mustDialWebSocket(t *testing.T, serverURL string) (net.Conn, *bufio.Reader)
 		"Upgrade: websocket\r\n" +
 		"Connection: Upgrade\r\n" +
 		"Sec-WebSocket-Key: " + key + "\r\n" +
-		"Sec-WebSocket-Version: 13\r\n\r\n"
+		"Sec-WebSocket-Version: 13\r\n"
+	for name, value := range headers {
+		request += name + ": " + value + "\r\n"
+	}
+	request += "\r\n"
 	if _, err := conn.Write([]byte(request)); err != nil {
 		t.Fatalf("write handshake: %v", err)
 	}
@@ -123,9 +176,6 @@ func mustDialWebSocket(t *testing.T, serverURL string) (net.Conn, *bufio.Reader)
 	status, err := reader.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read handshake status: %v", err)
-	}
-	if !strings.Contains(status, "101") {
-		t.Fatalf("unexpected handshake status: %s", status)
 	}
 	for {
 		line, err := reader.ReadString('\n')
@@ -136,7 +186,7 @@ func mustDialWebSocket(t *testing.T, serverURL string) (net.Conn, *bufio.Reader)
 			break
 		}
 	}
-	return conn, reader
+	return status, conn, reader
 }
 
 func writeMaskedTextFrame(t *testing.T, conn net.Conn, payload string) {

@@ -3,11 +3,14 @@ package grpc
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"testing"
 	"time"
 
+	restapi "github.com/monsoondhcp/monsoon/internal/api/rest"
+	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/discovery"
 	"github.com/monsoondhcp/monsoon/internal/events"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
@@ -157,14 +160,90 @@ func TestGRPCStreams(t *testing.T) {
 	_ = discoveryResp.Body.Close()
 }
 
+func TestAuthorizeHonorsAuthEnforcement(t *testing.T) {
+	if err := authorize(context.Background(), auth.DefaultRoleAdmin); err != nil {
+		t.Fatalf("expected auth-disabled context to allow request, got %v", err)
+	}
+
+	err := authorize(restapi.WithAuthEnforcement(context.Background(), true), auth.DefaultRoleAdmin)
+	if err == nil {
+		t.Fatalf("expected enforced auth context to reject missing identity")
+	}
+	status, ok := err.(statusError)
+	if !ok {
+		t.Fatalf("expected statusError, got %T", err)
+	}
+	if status.code != codeUnauthenticated {
+		t.Fatalf("expected unauthenticated code, got %d", status.code)
+	}
+
+	ctx := restapi.WithIdentity(restapi.WithAuthEnforcement(context.Background(), true), auth.Identity{
+		Username: "viewer",
+		Role:     auth.DefaultRoleViewer,
+	})
+	err = authorize(ctx, auth.DefaultRoleAdmin)
+	if err == nil {
+		t.Fatalf("expected viewer to be denied")
+	}
+	status, ok = err.(statusError)
+	if !ok {
+		t.Fatalf("expected statusError, got %T", err)
+	}
+	if status.code != codePermissionDenied {
+		t.Fatalf("expected permission denied code, got %d", status.code)
+	}
+}
+
+func TestGRPCSystemHealthRPCs(t *testing.T) {
+	stack := newTestStack(t)
+	defer stack.close(t)
+
+	payload, trailer, _ := stack.invokeUnary(t, "/monsoon.v1.SystemService/GetHealth", emptyMessage{})
+	if got := trailer.Get("Grpc-Status"); got != "0" {
+		t.Fatalf("expected grpc success, got %q", got)
+	}
+	var health systemHealthResponse
+	if err := health.unmarshalProto(payload); err != nil {
+		t.Fatalf("unmarshal health response: %v", err)
+	}
+	if health.Status != "healthy" || !health.Ready {
+		t.Fatalf("unexpected health response: %+v", health)
+	}
+	payloadMap := map[string]any{}
+	if err := json.Unmarshal([]byte(health.PayloadJSON), &payloadMap); err != nil {
+		t.Fatalf("decode payload json: %v", err)
+	}
+	if payloadMap["status"] != "healthy" {
+		t.Fatalf("unexpected payload status: %+v", payloadMap)
+	}
+
+	stack.handlerDeps.DHCPv4Enabled = true
+	stack.handlerDeps.DHCPv4Listen = ":67"
+	stack.handlerDeps.DHCPv4Running = func() bool { return false }
+	stack.rebuildHandler()
+
+	payload, trailer, _ = stack.invokeUnary(t, "/monsoon.v1.SystemService/GetReadiness", emptyMessage{})
+	if got := trailer.Get("Grpc-Status"); got != "0" {
+		t.Fatalf("expected grpc success for readiness rpc, got %q", got)
+	}
+	var readiness systemHealthResponse
+	if err := readiness.unmarshalProto(payload); err != nil {
+		t.Fatalf("unmarshal readiness response: %v", err)
+	}
+	if readiness.Status != "degraded" || readiness.Ready {
+		t.Fatalf("unexpected readiness response: %+v", readiness)
+	}
+}
+
 type testStack struct {
-	server     *Server
-	baseURL    string
-	client     *http.Client
-	engine     *storage.Engine
-	ipam       *ipam.Engine
-	leaseStore lease.Store
-	broker     *events.Broker
+	server      *Server
+	baseURL     string
+	client      *http.Client
+	engine      *storage.Engine
+	ipam        *ipam.Engine
+	leaseStore  lease.Store
+	broker      *events.Broker
+	handlerDeps HandlerDeps
 }
 
 func newTestStack(t *testing.T) *testStack {
@@ -191,12 +270,21 @@ func newTestStack(t *testing.T) *testStack {
 	discoveryEngine := discovery.NewEngine(engine, leaseStore, ipamEngine, time.Hour)
 	broker := events.NewBroker(16)
 
-	handler := NewHandler(HandlerDeps{
-		LeaseStore:      leaseStore,
-		IPAMEngine:      ipamEngine,
-		DiscoveryEngine: discoveryEngine,
-		EventBroker:     broker,
-	}).Handler()
+	handlerDeps := HandlerDeps{
+		LeaseStore:       leaseStore,
+		IPAMEngine:       ipamEngine,
+		DiscoveryEngine:  discoveryEngine,
+		DiscoveryEnabled: true,
+		Version:          "test",
+		StartedAt:        time.Now().UTC().Add(-time.Minute),
+		StorageReady: func(ctx context.Context) error {
+			return engine.Tx(func(tx *storage.Tx) error {
+				return ctx.Err()
+			})
+		},
+		EventBroker: broker,
+	}
+	handler := NewHandler(handlerDeps).Handler()
 	server := NewServer("127.0.0.1:0", handler)
 	go func() {
 		_ = server.Start()
@@ -222,14 +310,19 @@ func newTestStack(t *testing.T) *testStack {
 	}
 
 	return &testStack{
-		server:     server,
-		baseURL:    "http://" + server.listener.Addr().String(),
-		client:     client,
-		engine:     engine,
-		ipam:       ipamEngine,
-		leaseStore: leaseStore,
-		broker:     broker,
+		server:      server,
+		baseURL:     "http://" + server.listener.Addr().String(),
+		client:      client,
+		engine:      engine,
+		ipam:        ipamEngine,
+		leaseStore:  leaseStore,
+		broker:      broker,
+		handlerDeps: handlerDeps,
 	}
+}
+
+func (s *testStack) rebuildHandler() {
+	s.server.httpServer.Handler = NewHandler(s.handlerDeps).Handler()
 }
 
 func (s *testStack) close(t *testing.T) {

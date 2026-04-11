@@ -14,6 +14,7 @@ import (
 const treeUsers = "users"
 
 var ErrInvalidCredentials = errors.New("invalid credentials")
+var ErrBootstrapUnavailable = errors.New("admin bootstrap is unavailable")
 
 func (s *Service) EnsureAdmin(ctx context.Context, username string, passwordHash string) error {
 	username = normalizeUsername(username)
@@ -27,11 +28,7 @@ func (s *Service) EnsureAdmin(ctx context.Context, username string, passwordHash
 
 	hash := strings.TrimSpace(passwordHash)
 	if hash == "" {
-		defaultHash, err := bcrypt.GenerateFromPassword([]byte("admin"), bcrypt.DefaultCost)
-		if err != nil {
-			return err
-		}
-		hash = string(defaultHash)
+		return errors.New("admin password hash is required")
 	}
 
 	return s.upsertUser(ctx, User{
@@ -41,14 +38,51 @@ func (s *Service) EnsureAdmin(ctx context.Context, username string, passwordHash
 	})
 }
 
+func (s *Service) BootstrapAdmin(ctx context.Context, username string, password string) error {
+	username = normalizeUsername(username)
+	if username == "" {
+		username = "admin"
+	}
+	if strings.TrimSpace(password) == "" {
+		return errors.New("password is required")
+	}
+	hasUsers, err := s.HasUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if hasUsers {
+		return ErrBootstrapUnavailable
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	return s.upsertUser(ctx, User{
+		Username:     username,
+		Role:         DefaultRoleAdmin,
+		PasswordHash: string(hash),
+	})
+}
+
 func (s *Service) AuthenticateLocal(ctx context.Context, username string, password string) (Identity, error) {
+	username = normalizeUsername(username)
+	if err := s.lockouts.Check(ctx, username); err != nil {
+		return Identity{}, err
+	}
 	user, err := s.GetUser(ctx, username)
 	if err != nil {
+		if lockErr := s.lockouts.RecordFailure(ctx, username); lockErr != nil {
+			return Identity{}, lockErr
+		}
 		return Identity{}, ErrInvalidCredentials
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		if lockErr := s.lockouts.RecordFailure(ctx, username); lockErr != nil {
+			return Identity{}, lockErr
+		}
 		return Identity{}, ErrInvalidCredentials
 	}
+	s.lockouts.Reset(ctx, username)
 	return Identity{
 		Username: user.Username,
 		Role:     user.Role,
@@ -85,6 +119,21 @@ func (s *Service) GetUser(_ context.Context, username string) (User, error) {
 		return User{}, err
 	}
 	return out, nil
+}
+
+func (s *Service) HasUsers(_ context.Context) (bool, error) {
+	found := false
+	err := s.store.Iterate(treeUsers, nil, nil, func(_, _ []byte) bool {
+		found = true
+		return false
+	})
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return found, nil
 }
 
 func (s *Service) upsertUser(_ context.Context, user User) error {

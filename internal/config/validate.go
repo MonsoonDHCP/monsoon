@@ -45,6 +45,25 @@ func Validate(cfg *Config) error {
 	if cfg.API.REST.RateLimit <= 0 {
 		errs = append(errs, "api.rest.rate_limit must be > 0")
 	}
+	if cfg.API.REST.AuthRateLimit <= 0 {
+		errs = append(errs, "api.rest.auth_rate_limit must be > 0")
+	}
+	for idx, proxy := range cfg.API.REST.TrustedProxies {
+		if err := validateTrustedProxy(proxy); err != nil {
+			errs = append(errs, fmt.Sprintf("api.rest.trusted_proxies[%d]: %v", idx, err))
+		}
+	}
+	validateTLSPair("api.rest", cfg.API.REST.TLSCertFile, cfg.API.REST.TLSKeyFile, &errs)
+	validateTLSPair("api.grpc", cfg.API.GRPC.TLSCertFile, cfg.API.GRPC.TLSKeyFile, &errs)
+	validateTLSPair("api.mcp", cfg.API.MCP.TLSCertFile, cfg.API.MCP.TLSKeyFile, &errs)
+	if cfg.Auth.Enabled {
+		for _, origin := range cfg.API.REST.CORSOrigins {
+			if strings.TrimSpace(origin) == "*" {
+				errs = append(errs, "api.rest.cors_origins must not contain * when auth.enabled=true")
+				break
+			}
+		}
+	}
 	for idx, hook := range cfg.Webhooks {
 		if strings.TrimSpace(hook.Name) == "" {
 			errs = append(errs, fmt.Sprintf("webhooks[%d].name is required", idx))
@@ -74,6 +93,14 @@ func Validate(cfg *Config) error {
 
 	if cfg.Auth.Enabled && strings.TrimSpace(cfg.Auth.Type) == "" {
 		errs = append(errs, "auth.type is required when auth.enabled=true")
+	}
+	if cfg.Auth.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Auth.Type), "local") {
+		if cfg.Auth.Local.MaxFailedAttempts <= 0 {
+			errs = append(errs, "auth.local.max_failed_attempts must be > 0")
+		}
+		if cfg.Auth.Local.LockoutDuration.Duration <= 0 {
+			errs = append(errs, "auth.local.lockout_duration must be > 0")
+		}
 	}
 	if cfg.HA.Enabled {
 		if strings.TrimSpace(cfg.HA.PeerAddress) == "" {
@@ -188,4 +215,26 @@ func validateListenAddr(addr string) error {
 		return fmt.Errorf("invalid port %d", p)
 	}
 	return nil
+}
+
+func validateTLSPair(prefix, certFile, keyFile string, errs *[]string) {
+	certSet := strings.TrimSpace(certFile) != ""
+	keySet := strings.TrimSpace(keyFile) != ""
+	if certSet != keySet {
+		*errs = append(*errs, prefix+".tls_cert_file and "+prefix+".tls_key_file must either both be set or both be empty")
+	}
+}
+
+func validateTrustedProxy(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return errors.New("must not be empty")
+	}
+	if _, err := netip.ParseAddr(value); err == nil {
+		return nil
+	}
+	if _, err := netip.ParsePrefix(value); err == nil {
+		return nil
+	}
+	return fmt.Errorf("must be an IP address or CIDR")
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/events"
 	"github.com/monsoondhcp/monsoon/internal/ipam"
 	"github.com/monsoondhcp/monsoon/internal/lease"
+	"github.com/monsoondhcp/monsoon/internal/metrics"
 	uisettings "github.com/monsoondhcp/monsoon/internal/settings"
 	"gopkg.in/yaml.v3"
 )
@@ -37,27 +38,37 @@ type SystemBackup struct {
 }
 
 type RouterDeps struct {
-	LeaseStore        lease.Store
-	IPAMEngine        *ipam.Engine
-	DiscoveryEngine   *discovery.Engine
-	AuthService       *auth.Service
-	AuthSecureCookie  bool
-	AuditLogger       *audit.Logger
-	Version           string
-	MetricsPath       string
-	DHCPv4Enabled     bool
-	DHCPv4Listen      string
-	DHCPv4Running     func() bool
-	HAStatus          func() any
-	HATriggerFailover func(context.Context, string) (any, error)
-	Dashboard         DashboardConfig
-	UISettings        uisettings.UIStore
-	EventBroker       *events.Broker
-	StartedAt         time.Time
-	ConfigSnapshot    func() any
-	UpdateConfig      func(context.Context, map[string]any) (any, error)
-	CreateBackup      func(context.Context) (SystemBackup, error)
-	ListBackups       func(context.Context) ([]SystemBackup, error)
+	LeaseStore           lease.Store
+	IPAMEngine           *ipam.Engine
+	DiscoveryEngine      *discovery.Engine
+	DiscoveryEnabled     bool
+	DiscoveryEnabledFunc func() bool
+	AuthService          *auth.Service
+	AuthSecureCookie     bool
+	AuthSecureCookieFunc func() bool
+	AuditLogger          *audit.Logger
+	Version              string
+	MetricsPath          string
+	StorageReady         func(context.Context) error
+	DHCPv4Enabled        bool
+	DHCPv4Listen         string
+	DHCPv4EnabledFunc    func() bool
+	DHCPv4ListenFunc     func() string
+	DHCPv4Running        func() bool
+	HAEnabled            bool
+	HAEnabledFunc        func() bool
+	HAStatus             func() any
+	HATriggerFailover    func(context.Context, string) (any, error)
+	Dashboard            DashboardConfig
+	UISettings           uisettings.UIStore
+	EventBroker          *events.Broker
+	StartedAt            time.Time
+	Metrics              *metrics.Registry
+	ConfigSnapshot       func() any
+	ReloadStatus         func() any
+	UpdateConfig         func(context.Context, map[string]any) (any, error)
+	CreateBackup         func(context.Context) (SystemBackup, error)
+	ListBackups          func(context.Context) ([]SystemBackup, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
@@ -71,7 +82,7 @@ func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
 		registerDiscoveryRoutes(mux, deps.DiscoveryEngine, deps.EventBroker, deps.AuditLogger)
 	}
 	if deps.AuthService != nil {
-		registerAuthRoutes(mux, deps.AuthService, deps.AuthSecureCookie, deps.AuditLogger)
+		registerAuthRoutes(mux, deps.AuthService, deps.AuthSecureCookieValue, deps.AuditLogger, deps.Metrics)
 	}
 	if deps.IPAMEngine != nil {
 		registerSubnetRoutes(mux, deps.IPAMEngine, deps.EventBroker, deps.AuditLogger)
@@ -105,31 +116,18 @@ func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
 }
 
 func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
-	mux.HandleFunc("GET /api/v1/system/health", func(w http.ResponseWriter, _ *http.Request) {
-		running := false
-		if deps.DHCPv4Running != nil {
-			running = deps.DHCPv4Running()
+	mux.HandleFunc("GET /api/v1/system/health", func(w http.ResponseWriter, r *http.Request) {
+		payload, _ := BuildSystemHealthPayload(r.Context(), deps)
+		WriteJSON(w, http.StatusOK, payload, nil)
+	})
+
+	mux.HandleFunc("GET /api/v1/system/ready", func(w http.ResponseWriter, r *http.Request) {
+		payload, ready := BuildSystemHealthPayload(r.Context(), deps)
+		status := http.StatusOK
+		if !ready {
+			status = http.StatusServiceUnavailable
 		}
-		now := time.Now().UTC()
-		startedAt := deps.StartedAt
-		uptime := "0s"
-		if !startedAt.IsZero() && now.After(startedAt) {
-			uptime = now.Sub(startedAt).Round(time.Second).String()
-		}
-		WriteJSON(w, http.StatusOK, map[string]any{
-			"status":     "healthy",
-			"version":    deps.Version,
-			"started_at": startedAt,
-			"uptime":     uptime,
-			"components": map[string]any{
-				"dhcpv4": map[string]any{
-					"enabled": deps.DHCPv4Enabled,
-					"listen":  deps.DHCPv4Listen,
-					"running": running,
-				},
-				"ha": deps.HAStatusValue(),
-			},
-		}, nil)
+		WriteJSON(w, status, payload, nil)
 	})
 
 	mux.HandleFunc("GET /api/v1/system/info", func(w http.ResponseWriter, _ *http.Request) {
@@ -140,11 +138,12 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 			uptimeSec = int64(now.Sub(startedAt).Seconds())
 		}
 		WriteJSON(w, http.StatusOK, map[string]any{
-			"version":    deps.Version,
-			"started_at": startedAt,
-			"now":        now,
-			"uptime_sec": uptimeSec,
-			"ha":         deps.HAStatusValue(),
+			"version":       deps.Version,
+			"started_at":    startedAt,
+			"now":           now,
+			"uptime_sec":    uptimeSec,
+			"ha":            deps.HAStatusValue(),
+			"config_reload": deps.ReloadStatusValue(),
 			"runtime": map[string]any{
 				"goos":       runtime.GOOS,
 				"goarch":     runtime.GOARCH,
@@ -161,7 +160,9 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 		}
 		snapshot := deps.ConfigSnapshot()
 		sanitized := sanitizeConfigSnapshot(snapshot)
-		WriteJSON(w, http.StatusOK, sanitized, nil)
+		WriteJSON(w, http.StatusOK, sanitized, map[string]any{
+			"reload": deps.ReloadStatusValue(),
+		})
 	})
 
 	mux.HandleFunc("PUT /api/v1/system/config", func(w http.ResponseWriter, r *http.Request) {
@@ -182,7 +183,9 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 			WriteError(w, http.StatusBadRequest, "config_update_failed", err.Error())
 			return
 		}
-		WriteJSON(w, http.StatusOK, sanitizeConfigSnapshot(updated), nil)
+		WriteJSON(w, http.StatusOK, sanitizeConfigSnapshot(updated), map[string]any{
+			"reload": deps.ReloadStatusValue(),
+		})
 	})
 
 	mux.HandleFunc("GET /api/v1/system/config/export", func(w http.ResponseWriter, r *http.Request) {
@@ -299,6 +302,210 @@ func (deps RouterDeps) HAStatusValue() any {
 		return value
 	}
 	return map[string]any{"status": "unknown"}
+}
+
+func (deps RouterDeps) ReloadStatusValue() any {
+	if deps.ReloadStatus == nil {
+		return nil
+	}
+	return deps.ReloadStatus()
+}
+
+func (deps RouterDeps) DiscoveryEnabledValue() bool {
+	if deps.DiscoveryEnabledFunc != nil {
+		return deps.DiscoveryEnabledFunc()
+	}
+	return deps.DiscoveryEnabled
+}
+
+func (deps RouterDeps) AuthSecureCookieValue() bool {
+	if deps.AuthSecureCookieFunc != nil {
+		return deps.AuthSecureCookieFunc()
+	}
+	return deps.AuthSecureCookie
+}
+
+func (deps RouterDeps) DHCPv4EnabledValue() bool {
+	if deps.DHCPv4EnabledFunc != nil {
+		return deps.DHCPv4EnabledFunc()
+	}
+	return deps.DHCPv4Enabled
+}
+
+func (deps RouterDeps) DHCPv4ListenValue() string {
+	if deps.DHCPv4ListenFunc != nil {
+		return deps.DHCPv4ListenFunc()
+	}
+	return deps.DHCPv4Listen
+}
+
+func (deps RouterDeps) HAEnabledValue() bool {
+	if deps.HAEnabledFunc != nil {
+		return deps.HAEnabledFunc()
+	}
+	return deps.HAEnabled
+}
+
+func BuildSystemHealthPayload(ctx context.Context, deps RouterDeps) (map[string]any, bool) {
+	now := time.Now().UTC()
+	startedAt := deps.StartedAt
+	uptime := "0s"
+	if !startedAt.IsZero() && now.After(startedAt) {
+		uptime = now.Sub(startedAt).Round(time.Second).String()
+	}
+
+	components := map[string]any{}
+	ready := true
+
+	storageComponent, storageReady := evaluateStorageHealth(ctx, deps)
+	components["storage"] = storageComponent
+	ready = ready && storageReady
+
+	dhcpComponent, dhcpReady := evaluateDHCPv4Health(deps)
+	components["dhcpv4"] = dhcpComponent
+	ready = ready && dhcpReady
+
+	discoveryComponent, discoveryReady := evaluateDiscoveryHealth(ctx, deps)
+	components["discovery"] = discoveryComponent
+	ready = ready && discoveryReady
+
+	haComponent, haReady := evaluateHAHealth(deps)
+	components["ha"] = haComponent
+	ready = ready && haReady
+
+	status := "healthy"
+	if !ready {
+		status = "degraded"
+	}
+
+	return map[string]any{
+		"status":     status,
+		"ready":      ready,
+		"version":    deps.Version,
+		"started_at": startedAt,
+		"uptime":     uptime,
+		"components": components,
+	}, ready
+}
+
+func evaluateStorageHealth(ctx context.Context, deps RouterDeps) (map[string]any, bool) {
+	component := map[string]any{
+		"enabled": true,
+		"status":  "up",
+		"ready":   true,
+	}
+	if deps.StorageReady == nil {
+		component["status"] = "unknown"
+		return component, true
+	}
+	if err := deps.StorageReady(ctx); err != nil {
+		component["status"] = "down"
+		component["ready"] = false
+		component["error"] = err.Error()
+		return component, false
+	}
+	return component, true
+}
+
+func evaluateDHCPv4Health(deps RouterDeps) (map[string]any, bool) {
+	component := map[string]any{
+		"enabled": deps.DHCPv4EnabledValue(),
+		"listen":  deps.DHCPv4ListenValue(),
+	}
+	if !deps.DHCPv4EnabledValue() {
+		component["status"] = "disabled"
+		component["ready"] = true
+		return component, true
+	}
+	running := false
+	if deps.DHCPv4Running != nil {
+		running = deps.DHCPv4Running()
+	}
+	component["running"] = running
+	component["ready"] = running
+	if running {
+		component["status"] = "up"
+		return component, true
+	}
+	component["status"] = "down"
+	return component, false
+}
+
+func evaluateDiscoveryHealth(ctx context.Context, deps RouterDeps) (map[string]any, bool) {
+	component := map[string]any{
+		"enabled": deps.DiscoveryEnabledValue(),
+	}
+	if !deps.DiscoveryEnabledValue() || deps.DiscoveryEngine == nil {
+		component["status"] = "disabled"
+		component["ready"] = true
+		return component, true
+	}
+	status := deps.DiscoveryEngine.Status(ctx)
+	component["sensor_online"] = status.SensorOnline
+	component["last_scan_at"] = status.LastScanAt
+	component["next_scheduled_scan"] = status.NextScheduledScan
+	component["scanning"] = status.Scanning
+	component["latest_scan_id"] = status.LatestScanID
+	component["active_conflicts"] = status.ActiveConflicts
+	component["rogue_detected"] = status.RogueDetected
+	component["ready"] = status.SensorOnline
+	if status.SensorOnline {
+		component["status"] = "up"
+		return component, true
+	}
+	component["status"] = "down"
+	return component, false
+}
+
+func evaluateHAHealth(deps RouterDeps) (map[string]any, bool) {
+	component := map[string]any{
+		"enabled": deps.HAEnabledValue(),
+	}
+	if !deps.HAEnabledValue() || deps.HAStatus == nil {
+		component["status"] = "disabled"
+		component["ready"] = true
+		return component, true
+	}
+	raw := deps.HAStatusValue()
+	component["details"] = raw
+
+	details := toStringAnyMap(raw)
+	if fenced, _ := details["fenced"].(bool); fenced {
+		component["status"] = "down"
+		component["ready"] = false
+		return component, false
+	}
+	if role, _ := details["role"].(string); strings.EqualFold(strings.TrimSpace(role), "unknown") {
+		component["status"] = "degraded"
+		component["ready"] = false
+		return component, false
+	}
+	if peer, _ := details["peer"].(string); strings.EqualFold(strings.TrimSpace(peer), "disconnected") {
+		component["status"] = "degraded"
+		component["ready"] = true
+		return component, true
+	}
+	component["status"] = "up"
+	component["ready"] = true
+	return component, true
+}
+
+func toStringAnyMap(input any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	if typed, ok := input.(map[string]any); ok {
+		return typed
+	}
+	raw, err := json.Marshal(input)
+	if err != nil {
+		return nil
+	}
+	out := map[string]any{}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 func sanitizeConfigSnapshot(input any) any {
@@ -933,6 +1140,29 @@ func logAuditEntry(r *http.Request, logger *audit.Logger, entry audit.Entry) {
 	_ = logger.Log(r.Context(), entry)
 }
 
+func logSecurityAuditEntry(r *http.Request, logger *audit.Logger, entry audit.Entry) {
+	if logger == nil {
+		return
+	}
+	if strings.TrimSpace(entry.Source) == "" {
+		entry.Source = "security"
+	}
+	if entry.Meta == nil {
+		entry.Meta = map[string]any{}
+	}
+	entry.Meta["method"] = r.Method
+	entry.Meta["path"] = r.URL.Path
+	entry.Meta["remote_ip"] = clientIP(r)
+	userAgent := strings.TrimSpace(r.UserAgent())
+	if userAgent != "" {
+		entry.Meta["user_agent"] = userAgent
+	}
+	if requestID, ok := RequestIDFromContext(r.Context()); ok {
+		entry.Meta["request_id"] = requestID
+	}
+	_ = logger.Log(r.Context(), entry)
+}
+
 func requestActor(r *http.Request) string {
 	if identity, ok := IdentityFromContext(r.Context()); ok {
 		return identity.Username
@@ -943,6 +1173,10 @@ func requestActor(r *http.Request) string {
 func requireRoleForMutation(w http.ResponseWriter, r *http.Request, requiredRole string) bool {
 	identity, ok := IdentityFromContext(r.Context())
 	if !ok {
+		if AuthEnforcedFromContext(r.Context()) {
+			WriteError(w, http.StatusUnauthorized, "unauthorized", "authentication required")
+			return false
+		}
 		return true
 	}
 	if !auth.HasRole(requiredRole, identity.Role) {

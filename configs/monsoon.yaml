@@ -41,16 +41,24 @@ api:
   rest:
     enabled: true
     listen: :8067
-    cors_origins: ["*"]
+    cors_origins: []
+    trusted_proxies: []
     rate_limit: 100
+    auth_rate_limit: 5
+    tls_cert_file: ""
+    tls_key_file: ""
   grpc:
     enabled: true
     listen: :9067
+    tls_cert_file: ""
+    tls_key_file: ""
   websocket:
     enabled: true
   mcp:
     enabled: true
     listen: :7067
+    tls_cert_file: ""
+    tls_key_file: ""
 
 dashboard:
   enabled: true
@@ -62,12 +70,14 @@ auth:
   local:
     admin_username: admin
     admin_password_hash: ""
+    max_failed_attempts: 5
+    lockout_duration: 15m
   api_tokens:
     enabled: true
   session:
     duration: 24h
     cookie_name: monsoon_session
-    secure: false
+    secure: true
 
 ha:
   enabled: false

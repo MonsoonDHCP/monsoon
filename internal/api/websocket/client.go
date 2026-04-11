@@ -10,9 +10,12 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	restapi "github.com/monsoondhcp/monsoon/internal/api/rest"
 )
 
 const (
@@ -49,16 +52,33 @@ type subscriptionMessage struct {
 	Events []string `json:"events"`
 }
 
+type handshakeError struct {
+	status int
+	msg    string
+}
+
+func (e handshakeError) Error() string {
+	return e.msg
+}
+
 func Upgrade(w http.ResponseWriter, r *http.Request, hub *Hub) (*Client, error) {
 	if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") && !strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade") {
-		return nil, fmt.Errorf("missing websocket upgrade header")
+		return nil, handshakeError{status: http.StatusBadRequest, msg: "missing websocket upgrade header"}
 	}
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
-		return nil, fmt.Errorf("missing websocket protocol upgrade")
+		return nil, handshakeError{status: http.StatusBadRequest, msg: "missing websocket protocol upgrade"}
 	}
 	key := strings.TrimSpace(r.Header.Get("Sec-WebSocket-Key"))
 	if key == "" {
-		return nil, fmt.Errorf("missing websocket key")
+		return nil, handshakeError{status: http.StatusBadRequest, msg: "missing websocket key"}
+	}
+	if restapi.AuthEnforcedFromContext(r.Context()) {
+		if !sameOrigin(r) {
+			return nil, handshakeError{status: http.StatusForbidden, msg: "websocket origin rejected"}
+		}
+		if _, ok := restapi.IdentityFromContext(r.Context()); !ok {
+			return nil, handshakeError{status: http.StatusUnauthorized, msg: "authentication required"}
+		}
 	}
 
 	hijacker, ok := w.(http.Hijacker)
@@ -124,6 +144,18 @@ func (c *Client) Send(message EventMessage) {
 	case c.send <- message:
 	default:
 	}
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
 }
 
 func (c *Client) Close() {

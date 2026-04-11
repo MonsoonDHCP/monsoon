@@ -1,9 +1,7 @@
 package dhcpv6
 
 import (
-	"encoding/binary"
 	"errors"
-	"fmt"
 	"net"
 )
 
@@ -104,14 +102,4 @@ func copyIPv6(dst []byte, ip net.IP) {
 		v6 = net.IPv6zero
 	}
 	copy(dst, v6[:16])
-}
-
-func transactionID(value uint32) [3]byte {
-	var out [3]byte
-	binary.BigEndian.PutUint32(append([]byte{0}, out[:]...), value)
-	return out
-}
-
-func formatTransactionID(id [3]byte) string {
-	return fmt.Sprintf("%02x%02x%02x", id[0], id[1], id[2])
 }

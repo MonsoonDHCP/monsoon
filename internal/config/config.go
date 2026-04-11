@@ -119,17 +119,21 @@ type APIConfig struct {
 }
 
 type RESTConfig struct {
-	Enabled     bool     `yaml:"enabled"`
-	Listen      string   `yaml:"listen"`
-	CORSOrigins []string `yaml:"cors_origins"`
-	RateLimit   int      `yaml:"rate_limit"`
-	TLSCertFile string   `yaml:"tls_cert_file"`
-	TLSKeyFile  string   `yaml:"tls_key_file"`
+	Enabled        bool     `yaml:"enabled"`
+	Listen         string   `yaml:"listen"`
+	CORSOrigins    []string `yaml:"cors_origins"`
+	TrustedProxies []string `yaml:"trusted_proxies"`
+	RateLimit      int      `yaml:"rate_limit"`
+	AuthRateLimit  int      `yaml:"auth_rate_limit"`
+	TLSCertFile    string   `yaml:"tls_cert_file"`
+	TLSKeyFile     string   `yaml:"tls_key_file"`
 }
 
 type GRPCConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Listen  string `yaml:"listen"`
+	Enabled     bool   `yaml:"enabled"`
+	Listen      string `yaml:"listen"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 
 type WebSocketConfig struct {
@@ -137,8 +141,10 @@ type WebSocketConfig struct {
 }
 
 type MCPConfig struct {
-	Enabled bool   `yaml:"enabled"`
-	Listen  string `yaml:"listen"`
+	Enabled     bool   `yaml:"enabled"`
+	Listen      string `yaml:"listen"`
+	TLSCertFile string `yaml:"tls_cert_file"`
+	TLSKeyFile  string `yaml:"tls_key_file"`
 }
 
 type Dashboard struct {
@@ -156,8 +162,10 @@ type AuthConfig struct {
 }
 
 type LocalAuthConfig struct {
-	AdminUsername     string `yaml:"admin_username"`
-	AdminPasswordHash string `yaml:"admin_password_hash"`
+	AdminUsername     string   `yaml:"admin_username"`
+	AdminPasswordHash string   `yaml:"admin_password_hash"`
+	MaxFailedAttempts int      `yaml:"max_failed_attempts"`
+	LockoutDuration   Duration `yaml:"lockout_duration"`
 }
 
 type LDAPAuthConfig struct {
@@ -285,21 +293,31 @@ func DefaultConfig() *Config {
 		},
 		API: APIConfig{
 			REST: RESTConfig{
-				Enabled:     true,
-				Listen:      ":8067",
-				CORSOrigins: []string{"*"},
-				RateLimit:   100,
+				Enabled:        true,
+				Listen:         ":8067",
+				CORSOrigins:    []string{},
+				TrustedProxies: []string{},
+				RateLimit:      100,
+				AuthRateLimit:  5,
 			},
-			GRPC:      GRPCConfig{Enabled: true, Listen: ":9067"},
+			GRPC: GRPCConfig{
+				Enabled: true,
+				Listen:  ":9067",
+			},
 			WebSocket: WebSocketConfig{Enabled: true},
-			MCP:       MCPConfig{Enabled: true, Listen: ":7067"},
+			MCP: MCPConfig{
+				Enabled: true,
+				Listen:  ":7067",
+			},
 		},
 		Dashboard: Dashboard{Enabled: true, BasePath: "/"},
 		Auth: AuthConfig{
 			Enabled: true,
 			Type:    "local",
 			Local: LocalAuthConfig{
-				AdminUsername: "admin",
+				AdminUsername:     "admin",
+				MaxFailedAttempts: 5,
+				LockoutDuration:   Duration{Duration: 15 * time.Minute},
 			},
 			APITokens: APITokensConfig{Enabled: true},
 			Session: SessionAuthConfig{

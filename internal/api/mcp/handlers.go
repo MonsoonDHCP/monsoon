@@ -27,17 +27,21 @@ const defaultProtocolVersion = "2025-06-18"
 var promptNumberPattern = regexp.MustCompile(`\d+`)
 
 type HandlerDeps struct {
-	LeaseStore      lease.Store
-	IPAMEngine      *ipam.Engine
-	DiscoveryEngine *discovery.Engine
-	AuditLogger     *audit.Logger
-	EventBroker     *events.Broker
-	Version         string
-	StartedAt       time.Time
-	DHCPv4Enabled   bool
-	DHCPv4Listen    string
-	DHCPv4Running   func() bool
-	MCPListen       string
+	LeaseStore       lease.Store
+	IPAMEngine       *ipam.Engine
+	DiscoveryEngine  *discovery.Engine
+	DiscoveryEnabled bool
+	AuditLogger      *audit.Logger
+	EventBroker      *events.Broker
+	Version          string
+	StartedAt        time.Time
+	StorageReady     func(context.Context) error
+	DHCPv4Enabled    bool
+	DHCPv4Listen     string
+	DHCPv4Running    func() bool
+	HAEnabled        bool
+	HAStatus         func() any
+	MCPListen        string
 }
 
 type Toolset struct {
@@ -117,16 +121,6 @@ func (t *Toolset) Call(ctx context.Context, name string, args map[string]any) (C
 func ensureContent(result CallToolResult) CallToolResult {
 	if len(result.Content) == 0 {
 		result.Content = []ToolContent{{Type: "text", Text: "ok"}}
-	}
-	return result
-}
-
-func toolResult(text string, structured map[string]any) CallToolResult {
-	result := CallToolResult{
-		Content: []ToolContent{{Type: "text", Text: text}},
-	}
-	if structured != nil {
-		result.StructuredContent = structured
 	}
 	return result
 }
@@ -586,35 +580,28 @@ func (t *Toolset) auditQuery(ctx context.Context, args map[string]any) (CallTool
 }
 
 func (t *Toolset) getHealth(ctx context.Context, _ map[string]any) (CallToolResult, error) {
-	running := false
-	if t.deps.DHCPv4Running != nil {
-		running = t.deps.DHCPv4Running()
+	result, ready := restapi.BuildSystemHealthPayload(ctx, restapi.RouterDeps{
+		DiscoveryEngine:  t.deps.DiscoveryEngine,
+		DiscoveryEnabled: t.deps.DiscoveryEnabled,
+		Version:          t.deps.Version,
+		StartedAt:        t.deps.StartedAt,
+		StorageReady:     t.deps.StorageReady,
+		DHCPv4Enabled:    t.deps.DHCPv4Enabled,
+		DHCPv4Listen:     t.deps.DHCPv4Listen,
+		DHCPv4Running:    t.deps.DHCPv4Running,
+		HAEnabled:        t.deps.HAEnabled,
+		HAStatus:         t.deps.HAStatus,
+	})
+	components, _ := result["components"].(map[string]any)
+	components["mcp"] = map[string]any{
+		"enabled":          true,
+		"ready":            true,
+		"status":           "up",
+		"listen":           t.deps.MCPListen,
+		"protocol_version": defaultProtocolVersion,
 	}
-	now := time.Now().UTC()
-	uptime := "0s"
-	if !t.deps.StartedAt.IsZero() && now.After(t.deps.StartedAt) {
-		uptime = now.Sub(t.deps.StartedAt).Round(time.Second).String()
-	}
-	result := map[string]any{
-		"status":     "healthy",
-		"version":    t.deps.Version,
-		"started_at": t.deps.StartedAt,
-		"uptime":     uptime,
-		"components": map[string]any{
-			"dhcpv4": map[string]any{
-				"enabled": t.deps.DHCPv4Enabled,
-				"listen":  t.deps.DHCPv4Listen,
-				"running": running,
-			},
-			"mcp": map[string]any{
-				"listen":           t.deps.MCPListen,
-				"protocol_version": defaultProtocolVersion,
-			},
-		},
-	}
-	if t.deps.DiscoveryEngine != nil {
-		result["discovery"] = t.deps.DiscoveryEngine.Status(ctx)
-	}
+	result["components"] = components
+	result["ready"] = ready
 	return toolResultJSON(result), nil
 }
 
@@ -790,8 +777,14 @@ func (t *Toolset) logAudit(ctx context.Context, entry audit.Entry) {
 }
 
 func requireRole(ctx context.Context, required string) error {
+	if required == "" {
+		return nil
+	}
 	identity, ok := restapi.IdentityFromContext(ctx)
 	if !ok {
+		if restapi.AuthEnforcedFromContext(ctx) {
+			return fmt.Errorf("unauthorized: authentication required")
+		}
 		return nil
 	}
 	if auth.HasRole(required, identity.Role) {

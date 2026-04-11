@@ -54,6 +54,11 @@ func (h *Hub) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		client, err := Upgrade(w, r, h)
 		if err != nil {
+			var handshakeErr handshakeError
+			if ok := errorAs(err, &handshakeErr); ok {
+				http.Error(w, handshakeErr.Error(), handshakeErr.status)
+				return
+			}
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -118,4 +123,16 @@ func newSystemMessage(eventType string, data map[string]any) EventMessage {
 		Timestamp: time.Now().UTC(),
 		Data:      cloneMap(data),
 	}
+}
+
+func errorAs(err error, target *handshakeError) bool {
+	if err == nil || target == nil {
+		return false
+	}
+	typed, ok := err.(handshakeError)
+	if !ok {
+		return false
+	}
+	*target = typed
+	return true
 }

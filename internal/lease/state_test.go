@@ -15,3 +15,12 @@ func TestStateTransitions(t *testing.T) {
 		t.Fatalf("expected invalid transition error")
 	}
 }
+
+func TestCanTransitionSameAndUnknown(t *testing.T) {
+	if !CanTransition(StateBound, StateBound) {
+		t.Fatalf("same-state transition should be allowed")
+	}
+	if CanTransition(LeaseState("unknown"), StateBound) {
+		t.Fatalf("unknown source state should not transition")
+	}
+}

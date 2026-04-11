@@ -169,6 +169,48 @@ func TestMCPReserveSearchPlanAndAudit(t *testing.T) {
 	}
 }
 
+func TestMCPHealthToolReflectsReadiness(t *testing.T) {
+	server := NewServer(HandlerDeps{
+		Version:          "test",
+		StartedAt:        time.Now().UTC().Add(-time.Minute),
+		DiscoveryEnabled: true,
+		StorageReady: func(context.Context) error {
+			return nil
+		},
+		DHCPv4Enabled: true,
+		DHCPv4Listen:  ":67",
+		DHCPv4Running: func() bool {
+			return false
+		},
+		MCPListen: ":7067",
+	})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	call := postRPC(t, ts.URL+messagePath, rpcRequest{
+		JSONRPC: "2.0",
+		ID:      11,
+		Method:  "tools/call",
+		Params: mustRawJSON(t, map[string]any{
+			"name":      "monsoon_get_health",
+			"arguments": map[string]any{},
+		}),
+	})
+	if call.Error != nil {
+		t.Fatalf("health tool call error: %+v", call.Error)
+	}
+	result := decodeCallResult(t, call.Result)
+	if result.IsError {
+		t.Fatalf("health tool returned error: %+v", result)
+	}
+	if result.StructuredContent["status"] != "degraded" {
+		t.Fatalf("expected degraded mcp health status, got %+v", result.StructuredContent)
+	}
+	if ready, _ := result.StructuredContent["ready"].(bool); ready {
+		t.Fatalf("expected mcp readiness false, got %+v", result.StructuredContent)
+	}
+}
+
 func TestMCPSSEEndpointAndQueuedResponse(t *testing.T) {
 	server := newTestMCPServer(t)
 	ts := httptest.NewServer(server.Handler())
@@ -227,8 +269,8 @@ func TestMCPMutationRespectsRole(t *testing.T) {
 	defer eng.Close()
 
 	authService := auth.NewService(eng, auth.ServiceOptions{CookieName: "monsoon_session", SessionDuration: time.Hour})
-	if err := authService.EnsureAdmin(context.Background(), "admin", ""); err != nil {
-		t.Fatalf("ensure admin: %v", err)
+	if err := authService.BootstrapAdmin(context.Background(), "admin", "admin"); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
 	}
 	_, token, err := authService.CreateToken(context.Background(), "viewer", auth.DefaultRoleViewer, nil, "viewer token")
 	if err != nil {
@@ -268,6 +310,26 @@ func TestMCPMutationRespectsRole(t *testing.T) {
 	callResult := decodeCallResult(t, respBody.Result)
 	if !callResult.IsError {
 		t.Fatalf("expected mutation denial, got %+v", callResult)
+	}
+}
+
+func TestRequireRoleHonorsAuthEnforcement(t *testing.T) {
+	if err := requireRole(context.Background(), auth.DefaultRoleAdmin); err != nil {
+		t.Fatalf("expected auth-disabled context to allow request, got %v", err)
+	}
+
+	err := requireRole(restapi.WithAuthEnforcement(context.Background(), true), auth.DefaultRoleAdmin)
+	if err == nil || !strings.Contains(err.Error(), "authentication required") {
+		t.Fatalf("expected authentication error, got %v", err)
+	}
+
+	ctx := restapi.WithIdentity(restapi.WithAuthEnforcement(context.Background(), true), auth.Identity{
+		Username: "viewer",
+		Role:     auth.DefaultRoleViewer,
+	})
+	err = requireRole(ctx, auth.DefaultRoleAdmin)
+	if err == nil || !strings.Contains(err.Error(), "admin role required") {
+		t.Fatalf("expected role error, got %v", err)
 	}
 }
 

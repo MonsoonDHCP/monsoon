@@ -30,13 +30,23 @@ const (
 	codePermissionDenied   = 7
 	codeFailedPrecondition = 9
 	codeInternal           = 13
+	codeUnauthenticated    = 16
 )
 
 type HandlerDeps struct {
-	LeaseStore      lease.Store
-	IPAMEngine      *ipam.Engine
-	DiscoveryEngine *discovery.Engine
-	EventBroker     *events.Broker
+	LeaseStore       lease.Store
+	IPAMEngine       *ipam.Engine
+	DiscoveryEngine  *discovery.Engine
+	DiscoveryEnabled bool
+	Version          string
+	StartedAt        time.Time
+	StorageReady     func(context.Context) error
+	DHCPv4Enabled    bool
+	DHCPv4Listen     string
+	DHCPv4Running    func() bool
+	HAEnabled        bool
+	HAStatus         func() any
+	EventBroker      *events.Broker
 }
 
 type Handler struct {
@@ -77,6 +87,7 @@ func NewHandler(deps HandlerDeps) *Handler {
 	h.registerLeaseService()
 	h.registerAddressService()
 	h.registerDiscoveryService()
+	h.registerSystemService()
 	return h
 }
 
@@ -284,6 +295,9 @@ func authorize(ctx context.Context, requiredRole string) error {
 	}
 	identity, ok := restapi.IdentityFromContext(ctx)
 	if !ok {
+		if restapi.AuthEnforcedFromContext(ctx) {
+			return grpcError(codeUnauthenticated, "authentication required")
+		}
 		return nil
 	}
 	if !auth.HasRole(requiredRole, identity.Role) {

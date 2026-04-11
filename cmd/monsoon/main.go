@@ -133,13 +133,12 @@ func run() int {
 		log.Printf("configuration error: %v", err)
 		return 1
 	}
-	cfg := cfgManager.Get()
-	if dataDirFlag != "" {
-		cfg.Server.DataDir = dataDirFlag
-	}
-	if debug {
-		cfg.Server.LogLevel = "debug"
-	}
+	cfg := applyRuntimeOverrides(cfgManager.Get(), dataDirFlag, debug)
+	runtimeCfg := newRuntimeSettings(cfg)
+	reloadState := newRuntimeReloadState()
+	cfgManager.RegisterOnReload(func(next *config.Config) {
+		runtimeCfg.Apply(applyRuntimeOverrides(next, dataDirFlag, debug))
+	})
 
 	if checkConfig {
 		fmt.Printf("configuration valid (%s)\n", configPath)
@@ -263,13 +262,19 @@ func run() int {
 	)
 	auditLogger := audit.NewLogger(eng)
 	authService := auth.NewService(eng, auth.ServiceOptions{
-		CookieName:      cfg.Auth.Session.CookieName,
-		SessionDuration: cfg.Auth.Session.Duration.Duration,
+		CookieName:        cfg.Auth.Session.CookieName,
+		SessionDuration:   cfg.Auth.Session.Duration.Duration,
+		MaxFailedAttempts: cfg.Auth.Local.MaxFailedAttempts,
+		LockoutDuration:   cfg.Auth.Local.LockoutDuration.Duration,
 	})
 	if cfg.Auth.Enabled && strings.EqualFold(cfg.Auth.Type, "local") {
-		if err := authService.EnsureAdmin(context.Background(), cfg.Auth.Local.AdminUsername, cfg.Auth.Local.AdminPasswordHash); err != nil {
-			log.Printf("auth bootstrap failed: %v", err)
-			return 1
+		if strings.TrimSpace(cfg.Auth.Local.AdminPasswordHash) != "" {
+			if err := authService.EnsureAdmin(context.Background(), cfg.Auth.Local.AdminUsername, cfg.Auth.Local.AdminPasswordHash); err != nil {
+				log.Printf("auth bootstrap failed: %v", err)
+				return 1
+			}
+		} else {
+			log.Printf("local auth enabled without admin_password_hash; complete first-time setup via POST /api/v1/auth/bootstrap")
 		}
 	}
 	eventBroker := events.NewBroker(64)
@@ -425,16 +430,25 @@ func run() int {
 	}
 
 	routeDeps := rest.RouterDeps{
-		LeaseStore:       leaseStore,
-		IPAMEngine:       ipamEngine,
-		DiscoveryEngine:  discoveryEngine,
-		AuthService:      authService,
-		AuthSecureCookie: cfg.Auth.Session.Secure,
-		AuditLogger:      auditLogger,
-		Version:          version,
-		MetricsPath:      metricsPath,
-		DHCPv4Enabled:    cfg.DHCP.V4.Enabled,
-		DHCPv4Listen:     cfg.DHCP.V4.Listen,
+		LeaseStore:           leaseStore,
+		IPAMEngine:           ipamEngine,
+		DiscoveryEngine:      discoveryEngine,
+		DiscoveryEnabled:     cfg.IPAM.Discovery.Enabled,
+		AuthService:          authService,
+		AuthSecureCookie:     cfg.Auth.Session.Secure,
+		AuthSecureCookieFunc: runtimeCfg.AuthSecureCookie,
+		AuditLogger:          auditLogger,
+		Version:              version,
+		MetricsPath:          metricsPath,
+		Metrics:              reg,
+		StorageReady: func(ctx context.Context) error {
+			return eng.Tx(func(tx *storage.Tx) error {
+				return ctx.Err()
+			})
+		},
+		DHCPv4Enabled: cfg.DHCP.V4.Enabled,
+		DHCPv4Listen:  cfg.DHCP.V4.Listen,
+		HAEnabled:     cfg.HA.Enabled,
 		HAStatus: func() any {
 			if haManager == nil {
 				return map[string]any{"status": "disabled"}
@@ -452,9 +466,10 @@ func run() int {
 			DistDir:  webDistDir,
 			BasePath: cfg.Dashboard.BasePath,
 		},
-		UISettings:  uiSettingsStore,
-		EventBroker: eventBroker,
-		StartedAt:   startedAt,
+		UISettings:   uiSettingsStore,
+		EventBroker:  eventBroker,
+		StartedAt:    startedAt,
+		ReloadStatus: reloadState.Snapshot,
 		ConfigSnapshot: func() any {
 			snapshot := cfgManager.Get()
 			if dataDirFlag != "" {
@@ -463,6 +478,7 @@ func run() int {
 			return snapshot
 		},
 		UpdateConfig: func(_ context.Context, payload map[string]any) (any, error) {
+			beforeReload := applyRuntimeOverrides(cfgManager.Get(), dataDirFlag, debug)
 			raw, err := json.Marshal(payload)
 			if err != nil {
 				return nil, err
@@ -486,10 +502,8 @@ func run() int {
 			if err := cfgManager.Reload(); err != nil {
 				return nil, err
 			}
-			updated := cfgManager.Get()
-			if dataDirFlag != "" {
-				updated.Server.DataDir = dataDirFlag
-			}
+			updated := applyRuntimeOverrides(cfgManager.Get(), dataDirFlag, debug)
+			reloadState.Mark(time.Now().UTC(), restartRequiredConfigChanges(beforeReload, updated))
 			return updated, nil
 		},
 		CreateBackup: func(_ context.Context) (rest.SystemBackup, error) {
@@ -618,19 +632,24 @@ func run() int {
 		}
 	}
 
-	enforceAuth := cfg.Auth.Enabled &&
-		strings.EqualFold(cfg.Auth.Type, "local")
-
 	restHandler := rest.Chain(
 		mux,
 		rest.RequestIDMiddleware(),
+		rest.TrustedProxyHeadersMiddlewareFunc(runtimeCfg.RESTTrustedProxies),
 		rest.RecoveryMiddleware(),
-		rest.CORSMiddleware(cfg.API.REST.CORSOrigins),
-		rest.RateLimitMiddleware(cfg.API.REST.RateLimit),
-		rest.AuthMiddleware(authService, enforceAuth),
+		rest.SecurityHeadersMiddleware(),
+		rest.CORSMiddlewareFunc(runtimeCfg.RESTCORSOrigins),
+		rest.CSRFMiddleware(authService, reg, auditLogger),
+		rest.AuthRateLimitMiddlewareFunc(runtimeCfg.RESTAuthRateLimit, reg, auditLogger),
+		rest.RateLimitMiddlewareFunc(runtimeCfg.RESTRateLimit),
+		rest.AuthMiddlewareFunc(authService, runtimeCfg.AuthEnforced),
 		rest.LoggingMiddleware(),
 	)
-	restServer := rest.NewServer(cfg.API.REST.Listen, restHandler)
+	restServer := rest.NewServer(
+		cfg.API.REST.Listen,
+		restHandler,
+		rest.WithTLS(cfg.API.REST.TLSCertFile, cfg.API.REST.TLSKeyFile),
+	)
 	serverErr := make(chan error, 1)
 	go func() {
 		serverErr <- restServer.Start()
@@ -640,33 +659,54 @@ func run() int {
 	mcpErr := make(chan error, 1)
 	if cfg.API.MCP.Enabled {
 		mcpHandler := mcp.NewServer(mcp.HandlerDeps{
-			LeaseStore:      leaseStore,
-			IPAMEngine:      ipamEngine,
-			DiscoveryEngine: discoveryEngine,
-			AuditLogger:     auditLogger,
-			EventBroker:     eventBroker,
-			Version:         version,
-			StartedAt:       startedAt,
-			DHCPv4Enabled:   cfg.DHCP.V4.Enabled,
-			DHCPv4Listen:    cfg.DHCP.V4.Listen,
+			LeaseStore:       leaseStore,
+			IPAMEngine:       ipamEngine,
+			DiscoveryEngine:  discoveryEngine,
+			DiscoveryEnabled: cfg.IPAM.Discovery.Enabled,
+			AuditLogger:      auditLogger,
+			EventBroker:      eventBroker,
+			Version:          version,
+			StartedAt:        startedAt,
+			StorageReady: func(ctx context.Context) error {
+				return eng.Tx(func(tx *storage.Tx) error {
+					return ctx.Err()
+				})
+			},
+			DHCPv4Enabled: cfg.DHCP.V4.Enabled,
+			DHCPv4Listen:  cfg.DHCP.V4.Listen,
 			DHCPv4Running: func() bool {
 				if dhcpServer != nil {
 					return dhcpServer.Running()
 				}
 				return dhcpStarted
 			},
+			HAEnabled: cfg.HA.Enabled,
+			HAStatus: func() any {
+				if haManager == nil {
+					return map[string]any{"status": "disabled"}
+				}
+				return haManager.Status()
+			},
 			MCPListen: cfg.API.MCP.Listen,
 		}).Handler()
 		mcpHandler = rest.Chain(
 			mcpHandler,
 			rest.RequestIDMiddleware(),
+			rest.TrustedProxyHeadersMiddlewareFunc(runtimeCfg.RESTTrustedProxies),
 			rest.RecoveryMiddleware(),
-			rest.CORSMiddleware(cfg.API.REST.CORSOrigins),
-			rest.RateLimitMiddleware(cfg.API.REST.RateLimit),
-			rest.AuthMiddleware(authService, enforceAuth),
+			rest.SecurityHeadersMiddleware(),
+			rest.CORSMiddlewareFunc(runtimeCfg.RESTCORSOrigins),
+			rest.CSRFMiddleware(authService, reg, auditLogger),
+			rest.AuthRateLimitMiddlewareFunc(runtimeCfg.RESTAuthRateLimit, reg, auditLogger),
+			rest.RateLimitMiddlewareFunc(runtimeCfg.RESTRateLimit),
+			rest.AuthMiddlewareFunc(authService, runtimeCfg.AuthEnforced),
 			rest.LoggingMiddleware(),
 		)
-		mcpServer = rest.NewServer(cfg.API.MCP.Listen, mcpHandler)
+		mcpServer = rest.NewServer(
+			cfg.API.MCP.Listen,
+			mcpHandler,
+			rest.WithTLS(cfg.API.MCP.TLSCertFile, cfg.API.MCP.TLSKeyFile),
+		)
 		go func() {
 			mcpErr <- mcpServer.Start()
 		}()
@@ -675,21 +715,57 @@ func run() int {
 	var grpcServer *grpcapi.Server
 	grpcErr := make(chan error, 1)
 	if cfg.API.GRPC.Enabled {
+		grpcTLSConfig, err := loadServerTLSConfig(cfg.API.GRPC.TLSCertFile, cfg.API.GRPC.TLSKeyFile)
+		if err != nil {
+			log.Printf("grpc tls config failed: %v", err)
+			return 1
+		}
 		grpcHandler := grpcapi.NewHandler(grpcapi.HandlerDeps{
-			LeaseStore:      leaseStore,
-			IPAMEngine:      ipamEngine,
-			DiscoveryEngine: discoveryEngine,
-			EventBroker:     eventBroker,
+			LeaseStore:       leaseStore,
+			IPAMEngine:       ipamEngine,
+			DiscoveryEngine:  discoveryEngine,
+			DiscoveryEnabled: cfg.IPAM.Discovery.Enabled,
+			Version:          version,
+			StartedAt:        startedAt,
+			StorageReady: func(ctx context.Context) error {
+				return eng.Tx(func(tx *storage.Tx) error {
+					return ctx.Err()
+				})
+			},
+			DHCPv4Enabled: cfg.DHCP.V4.Enabled,
+			DHCPv4Listen:  cfg.DHCP.V4.Listen,
+			DHCPv4Running: func() bool {
+				if dhcpServer != nil {
+					return dhcpServer.Running()
+				}
+				return dhcpStarted
+			},
+			HAEnabled: cfg.HA.Enabled,
+			HAStatus: func() any {
+				if haManager == nil {
+					return map[string]any{"status": "disabled"}
+				}
+				return haManager.Status()
+			},
+			EventBroker: eventBroker,
 		}).Handler()
 		grpcHandler = rest.Chain(
 			grpcHandler,
 			rest.RequestIDMiddleware(),
+			rest.TrustedProxyHeadersMiddlewareFunc(runtimeCfg.RESTTrustedProxies),
 			rest.RecoveryMiddleware(),
-			rest.RateLimitMiddleware(cfg.API.REST.RateLimit),
-			rest.AuthMiddleware(authService, enforceAuth),
+			rest.SecurityHeadersMiddleware(),
+			rest.CSRFMiddleware(authService, reg, auditLogger),
+			rest.AuthRateLimitMiddlewareFunc(runtimeCfg.RESTAuthRateLimit, reg, auditLogger),
+			rest.RateLimitMiddlewareFunc(runtimeCfg.RESTRateLimit),
+			rest.AuthMiddlewareFunc(authService, runtimeCfg.AuthEnforced),
 			rest.LoggingMiddleware(),
 		)
-		grpcServer = grpcapi.NewServer(cfg.API.GRPC.Listen, grpcHandler)
+		var grpcOpts []grpcapi.ServerOption
+		if grpcTLSConfig != nil {
+			grpcOpts = append(grpcOpts, grpcapi.WithTLSConfig(grpcTLSConfig))
+		}
+		grpcServer = grpcapi.NewServer(cfg.API.GRPC.Listen, grpcHandler, grpcOpts...)
 		go func() {
 			grpcErr <- grpcServer.Start()
 		}()
@@ -698,7 +774,29 @@ func run() int {
 	sigCh := make(chan os.Signal, 4)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
-	log.Printf("monsoon started: rest=%s grpc=%s mcp=%s metrics=%s data=%s", cfg.API.REST.Listen, cfg.API.GRPC.Listen, cfg.API.MCP.Listen, metricsPath, cfg.Server.DataDir)
+	restScheme := "http"
+	if tlsFilesConfigured(cfg.API.REST.TLSCertFile, cfg.API.REST.TLSKeyFile) {
+		restScheme = "https"
+	}
+	grpcScheme := "grpc"
+	if tlsFilesConfigured(cfg.API.GRPC.TLSCertFile, cfg.API.GRPC.TLSKeyFile) {
+		grpcScheme = "grpcs"
+	}
+	mcpScheme := "http"
+	if tlsFilesConfigured(cfg.API.MCP.TLSCertFile, cfg.API.MCP.TLSKeyFile) {
+		mcpScheme = "https"
+	}
+	log.Printf(
+		"monsoon started: rest=%s://%s grpc=%s://%s mcp=%s://%s metrics=%s data=%s",
+		restScheme,
+		cfg.API.REST.Listen,
+		grpcScheme,
+		cfg.API.GRPC.Listen,
+		mcpScheme,
+		cfg.API.MCP.Listen,
+		metricsPath,
+		cfg.Server.DataDir,
+	)
 
 	for {
 		select {
@@ -731,13 +829,18 @@ func run() int {
 		case sig := <-sigCh:
 			switch sig {
 			case syscall.SIGHUP:
+				beforeReload := cfg
 				if err := cfgManager.Reload(); err != nil {
 					log.Printf("reload failed: %v", err)
 					continue
 				}
-				cfg = cfgManager.Get()
-				if dataDirFlag != "" {
-					cfg.Server.DataDir = dataDirFlag
+				cfg = applyRuntimeOverrides(cfgManager.Get(), dataDirFlag, debug)
+				runtimeCfg.Apply(cfg)
+				restartRequired := restartRequiredConfigChanges(beforeReload, cfg)
+				reloadState.Mark(time.Now().UTC(), restartRequired)
+				if len(restartRequired) > 0 {
+					log.Printf("configuration reloaded from %s; restart required for: %s", configPath, strings.Join(restartRequired, ", "))
+					continue
 				}
 				log.Printf("configuration reloaded from %s", configPath)
 			case syscall.SIGINT, syscall.SIGTERM:

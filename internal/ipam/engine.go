@@ -59,14 +59,14 @@ func (e *Engine) SeedFromConfig(ctx context.Context, subnets []config.SubnetConf
 	return nil
 }
 
-func (e *Engine) UpsertSubnet(_ context.Context, in UpsertSubnetInput) (Subnet, error) {
-	normalized, err := e.ValidateSubnet(context.Background(), in)
+func (e *Engine) UpsertSubnet(ctx context.Context, in UpsertSubnetInput) (Subnet, error) {
+	normalized, err := e.ValidateSubnet(ctx, in)
 	if err != nil {
 		return Subnet{}, err
 	}
 
 	now := time.Now().UTC()
-	old, err := e.GetSubnet(context.Background(), normalized.CIDR)
+	old, err := e.GetSubnet(ctx, normalized.CIDR)
 	if err == nil {
 		normalized.CreatedAt = old.CreatedAt
 	} else {
@@ -84,13 +84,13 @@ func (e *Engine) UpsertSubnet(_ context.Context, in UpsertSubnetInput) (Subnet, 
 	return normalized, nil
 }
 
-func (e *Engine) ValidateSubnet(_ context.Context, in UpsertSubnetInput) (Subnet, error) {
+func (e *Engine) ValidateSubnet(ctx context.Context, in UpsertSubnetInput) (Subnet, error) {
 	normalized, err := e.validateSubnet(in)
 	if err != nil {
 		return Subnet{}, err
 	}
 
-	current, _ := e.ListSubnets(context.Background())
+	current, _ := e.ListSubnets(ctx)
 	for _, s := range current {
 		if s.CIDR == normalized.CIDR {
 			continue
@@ -162,7 +162,7 @@ func (e *Engine) ListSummaries(ctx context.Context) ([]SubnetSummary, error) {
 	result := make([]SubnetSummary, 0, len(subnets))
 	for _, s := range subnets {
 		entry := leaseMap[s.CIDR]
-		util := minInt(100, int(float64(entry.active)/float64(maxInt(1, entry.active+80))*100.0))
+		util := utilizationPercent(entry.active, subnetCapacity(s))
 		result = append(result, SubnetSummary{
 			CIDR:         s.CIDR,
 			Name:         s.Name,
@@ -179,7 +179,7 @@ func (e *Engine) ListSummaries(ctx context.Context) ([]SubnetSummary, error) {
 			VLAN:         0,
 			ActiveLeases: unassigned.active,
 			TotalLeases:  unassigned.total,
-			Utilization:  minInt(100, int(float64(unassigned.active)/float64(maxInt(1, unassigned.active+80))*100.0)),
+			Utilization:  0,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].CIDR < result[j].CIDR })
@@ -745,6 +745,47 @@ func poolRange(subnet Subnet) (netip.Addr, netip.Addr, bool) {
 		return netip.Addr{}, netip.Addr{}, false
 	}
 	return start, end, true
+}
+
+func subnetCapacity(subnet Subnet) int {
+	if start, end, ok := poolRange(subnet); ok {
+		return ipv4Span(start, end)
+	}
+
+	prefix, err := netip.ParsePrefix(strings.TrimSpace(subnet.CIDR))
+	if err != nil {
+		return 0
+	}
+
+	total := AddressCount(prefix)
+	if prefix.Addr().Is4() && prefix.Bits() <= 30 && total >= 2 {
+		total -= 2
+	}
+	if total > uint64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	return int(total)
+}
+
+func utilizationPercent(active int, capacity int) int {
+	if active <= 0 || capacity <= 0 {
+		return 0
+	}
+	if active >= capacity {
+		return 100
+	}
+	return int(float64(active) / float64(capacity) * 100.0)
+}
+
+func ipv4Span(start netip.Addr, end netip.Addr) int {
+	if !start.Is4() || !end.Is4() || start.Compare(end) > 0 {
+		return 0
+	}
+	start4 := start.As4()
+	end4 := end.As4()
+	startValue := uint32(start4[0])<<24 | uint32(start4[1])<<16 | uint32(start4[2])<<8 | uint32(start4[3])
+	endValue := uint32(end4[0])<<24 | uint32(end4[1])<<16 | uint32(end4[2])<<8 | uint32(end4[3])
+	return int(endValue-startValue) + 1
 }
 
 func mergeAddressRecord(current AddressRecord, next AddressRecord) AddressRecord {

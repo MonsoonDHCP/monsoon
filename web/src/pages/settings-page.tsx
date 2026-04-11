@@ -20,7 +20,7 @@ function formatDuration(ns?: number) {
 }
 
 export function SettingsPage() {
-  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, health, systemConfig, backups, createBackup, refreshBackups, refreshSystemConfig, saveSystemConfig, requestManualFailover } = useDashboard()
+  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, health, systemConfig, backups, createBackup, restoreBackup, refreshBackups, refreshSystemConfig, saveSystemConfig, requestManualFailover } = useDashboard()
   const { setTheme } = useTheme()
   const [local, setLocal] = useState<UISettings>({
     theme: "system",
@@ -40,6 +40,9 @@ export function SettingsPage() {
   const systemConfigJSON = useMemo(() => JSON.stringify(systemConfig ?? {}, null, 2), [systemConfig])
   const ha = systemInfo?.ha ?? health?.components?.ha
   const haConfig = (systemConfig?.ha as Record<string, unknown> | undefined) ?? undefined
+  const authConfig = (systemConfig?.auth as Record<string, unknown> | undefined) ?? undefined
+  const configuredAuthType = typeof authConfig?.type === "string" ? authConfig.type.trim().toLowerCase() : "local"
+  const localAuthAvailable = configuredAuthType === "" || configuredAuthType === "local"
   const canTriggerFailover = Boolean(isAdmin && canMutate && ha?.role === "primary" && ha?.peer === "connected")
 
   useEffect(() => {
@@ -73,6 +76,17 @@ export function SettingsPage() {
       setConfigEditing(false)
     } catch (err) {
       setConfigError(err instanceof Error ? err.message : "Invalid configuration JSON")
+    }
+  }
+
+  const restoreSnapshot = async (backupName: string) => {
+    if (!window.confirm(`Restore snapshot ${backupName}? This will replace in-memory state with the selected backup.`)) {
+      return
+    }
+    try {
+      await restoreBackup({ name: backupName })
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : "Restore failed")
     }
   }
 
@@ -171,7 +185,7 @@ export function SettingsPage() {
             <Shield className="size-4 text-cyan-400" />
             Authentication
           </CardTitle>
-          <CardDescription>Session login and API token controls.</CardDescription>
+          <CardDescription>{localAuthAvailable ? "Local session login and API token controls." : `Configured auth mode: ${configuredAuthType}. This build exposes local auth controls only.`}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           {currentUser ? (
@@ -190,7 +204,7 @@ export function SettingsPage() {
                 </div>
               </div>
             </div>
-          ) : (
+          ) : localAuthAvailable ? (
             <div className="grid gap-3 md:grid-cols-2">
               <input
                 className="rounded-lg border border-border/70 bg-background px-3 py-2 text-sm"
@@ -215,6 +229,10 @@ export function SettingsPage() {
                   Login
                 </Button>
               </div>
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+              The configured auth mode is <span className="font-mono">{configuredAuthType}</span>. Local bootstrap and password login are unavailable in this build.
             </div>
           )}
 
@@ -372,9 +390,16 @@ export function SettingsPage() {
           <div className="space-y-2">
             {backups.slice(0, 8).map((backup) => (
               <div key={backup.path} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <p className="font-mono text-[11px] text-foreground">{backup.name}</p>
-                <p>{backup.created_at} | {(backup.size_bytes / 1024).toFixed(1)} KB</p>
-                <p className="truncate">{backup.path}</p>
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="font-mono text-[11px] text-foreground">{backup.name}</p>
+                    <p>{backup.created_at} | {(backup.size_bytes / 1024).toFixed(1)} KB</p>
+                    <p className="truncate">{backup.path}</p>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={() => void restoreSnapshot(backup.name)} disabled={!isAdmin || !canMutate}>
+                    Restore
+                  </Button>
+                </div>
               </div>
             ))}
             {backups.length === 0 && <p className="text-sm text-muted-foreground">No backups found yet.</p>}

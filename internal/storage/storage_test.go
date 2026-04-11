@@ -262,6 +262,37 @@ func TestSnapshotPageManagerWALEngineAndHelpers(t *testing.T) {
 		t.Fatalf("close reopened engine: %v", err)
 	}
 
+	restoreSource := filepath.Join(dir, "restore.snapshot")
+	restoreTrees := map[string]*BTree{
+		"leases": func() *BTree {
+			tree := NewBTree()
+			tree.Set([]byte("ip-9"), []byte("lease-9"))
+			return tree
+		}(),
+	}
+	if err := WriteSnapshot(restoreSource, restoreTrees); err != nil {
+		t.Fatalf("write restore snapshot: %v", err)
+	}
+	engine, err = OpenEngine(engineDir, []string{"leases"})
+	if err != nil {
+		t.Fatalf("reopen engine for restore: %v", err)
+	}
+	if err := engine.Put("leases", []byte("stale"), []byte("value")); err != nil {
+		t.Fatalf("seed stale key: %v", err)
+	}
+	if err := engine.RestoreSnapshot(restoreSource); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	if _, err := engine.Get("leases", []byte("stale")); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected stale key to be removed after restore, got %v", err)
+	}
+	if value, err := engine.Get("leases", []byte("ip-9")); err != nil || string(value) != "lease-9" {
+		t.Fatalf("expected restored key, got %q err=%v", value, err)
+	}
+	if err := engine.Close(); err != nil {
+		t.Fatalf("close restored engine: %v", err)
+	}
+
 	treeKey := makeTreeKey("leases", []byte("ip-3"))
 	tree, key, err := splitTreeKey(treeKey)
 	if err != nil || tree != "leases" || string(key) != "ip-3" {

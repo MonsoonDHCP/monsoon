@@ -2,6 +2,7 @@ package ipam
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -193,5 +194,49 @@ func TestListAddressesIncludesPoolLeaseAndReservation(t *testing.T) {
 	}
 	if reservationAddress.MAC != "AA:BB:CC:DD:EE:20" {
 		t.Fatalf("reservation mac mismatch: %s", reservationAddress.MAC)
+	}
+}
+
+func TestListSummariesUsesActualSubnetCapacity(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{"subnets", "leases"})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	leaseStore := lease.NewStore(eng)
+	ipam := NewEngine(eng, leaseStore)
+	_, err = ipam.UpsertSubnet(context.Background(), UpsertSubnetInput{
+		CIDR:       "10.30.0.0/24",
+		Name:       "Users",
+		DHCPEnable: true,
+		PoolStart:  "10.30.0.10",
+		PoolEnd:    "10.30.0.19",
+		LeaseSec:   3600,
+	})
+	if err != nil {
+		t.Fatalf("upsert subnet failed: %v", err)
+	}
+
+	for i := 10; i <= 13; i++ {
+		if err := leaseStore.Upsert(context.Background(), lease.Lease{
+			IP:       fmt.Sprintf("10.30.0.%d", i),
+			MAC:      "AA:BB:CC:DD:EE:30",
+			State:    lease.StateBound,
+			SubnetID: "10.30.0.0/24",
+		}); err != nil {
+			t.Fatalf("upsert lease %d failed: %v", i, err)
+		}
+	}
+
+	summaries, err := ipam.ListSummaries(context.Background())
+	if err != nil {
+		t.Fatalf("list summaries failed: %v", err)
+	}
+	if len(summaries) != 1 {
+		t.Fatalf("expected one summary, got %#v", summaries)
+	}
+	if summaries[0].Utilization != 40 {
+		t.Fatalf("expected 40%% utilization for 4/10 pool, got %d", summaries[0].Utilization)
 	}
 }

@@ -102,6 +102,13 @@ export function createSystemBackup() {
   })
 }
 
+export function restoreSystemBackup(payload: { name?: string; path?: string }) {
+  return request<SystemBackup>("/api/v1/system/restore", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  })
+}
+
 export function fetchLeases() {
   return request<Lease[]>("/api/v1/leases")
 }

@@ -43,6 +43,16 @@ func TestValidateRejectsNonPositiveLocalAuthLockoutConfig(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUnsupportedAuthTypeWhenEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.Enabled = true
+	cfg.Auth.Type = "ldap"
+
+	if err := Validate(cfg); err == nil {
+		t.Fatalf("expected unsupported auth type to be rejected")
+	}
+}
+
 func TestValidateRejectsPartialRESTTLSConfig(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.API.REST.TLSCertFile = "server.crt"

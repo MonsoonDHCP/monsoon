@@ -1,4 +1,4 @@
-# Production Readiness Assessment
+﻿# Production Readiness Assessment
 
 > Comprehensive evaluation of whether MonsoonDHCP is ready for production deployment.
 > Assessment Date: 2026-04-11
@@ -6,350 +6,379 @@
 
 ## Overall Verdict & Score
 
-**Production Readiness Score: 47/100**
+**Production Readiness Score: 56/100**
 
 | Category | Score | Weight | Weighted Score |
-|---|---:|---:|---:|
-| Core Functionality | 6/10 | 20% | 12 |
-| Reliability & Error Handling | 6/10 | 15% | 9 |
-| Security | 2/10 | 20% | 4 |
-| Performance | 5/10 | 10% | 5 |
-| Testing | 6/10 | 15% | 9 |
-| Observability | 3/10 | 10% | 3 |
-| Documentation | 4/10 | 5% | 2 |
-| Deployment Readiness | 6/10 | 5% | 3 |
-| **TOTAL** |  | **100%** | **47/100** |
+|---|---|---|---|
+| Core Functionality | 7/10 | 20% | 14.0 |
+| Reliability & Error Handling | 5/10 | 15% | 7.5 |
+| Security | 6/10 | 20% | 12.0 |
+| Performance | 6/10 | 10% | 6.0 |
+| Testing | 7/10 | 15% | 10.5 |
+| Observability | 5/10 | 10% | 5.0 |
+| Documentation | 3/10 | 5% | 1.5 |
+| Deployment Readiness | 7/10 | 5% | 3.5 |
+| **TOTAL** |  | **100%** | **60.0** |
+
+Score adjustment: `-4` points due to major documentation/spec drift and unsupported production claims.
 
 ## 1. Core Functionality Assessment
 
 ### 1.1 Feature Completeness
 
-Approximate implemented scope: **55-60% of the documented product promise**
-
 Core feature status:
-- `[x] Working` Subnet CRUD and reservation CRUD
-- `[x] Working` Basic lease lifecycle and DHCPv4/DHCPv6 serving
-- `[x] Working` Embedded dashboard shell and operator pages
-- `[x] Working` Audit logging and export
-- `[x] Working` MCP tool surface
-- `[ ] Partial` Discovery and conflict detection
-- `[ ] Partial` HA active-passive behavior
-- `[ ] Partial` gRPC and websocket hardening
-- `[ ] Partial` migration/import tooling breadth
-- `[ ] Missing` VLAN CRUD
-- `[ ] Missing` DDNS
-- `[ ] Missing` LDAP auth
-- `[ ] Missing` TLS
-- `[ ] Missing` Prometheus metrics endpoint
-- `[ ] Missing` HA load-sharing and WAL streaming
+
+- Working - DHCPv4 server and lease allocation flow
+- Working - DHCPv6 server and relay-aware handling
+- Working - subnet CRUD, reservations, basic address inventory
+- Working - embedded dashboard with auth-aware operator workflows
+- Working - backup creation, backup restore, config export, metrics endpoint, migrations
+- Partial - discovery and conflict detection
+- Partial - high availability and failover
+- Partial - REST API breadth vs published docs
+- Partial - accurate IPAM capacity/utilization reporting
+- Partial - configuration hot reload
+- Missing - LDAP/AD authentication
+- Missing - true passive rogue DHCP sensor behavior
+- Missing - full VLAN/IPAM feature set implied by docs
+
+Specified feature completeness estimate: **about 65% of intended v1 scope is actually implemented**.
 
 ### 1.2 Critical Path Analysis
 
-Can a user complete the main workflow end-to-end?
-- Yes, for the basic happy path: configure, start server, authenticate locally, create subnet, create reservation, observe leases, run discovery, view audit.
+Primary happy path:
 
-Where the workflow is still brittle:
-- Auth hardening is not trustworthy enough for production.
-- Dashboard functionality is broad but not deep; many pages are operational viewers rather than complete management consoles.
-- Spec-promised workflows around VLANs, DDNS, TLS, LDAP, and real rogue DHCP alerts are absent.
+1. Start service with config
+2. Bootstrap first admin
+3. Create or review subnets
+4. Serve DHCP traffic
+5. Inspect leases and reservations in dashboard/API
+
+That path is viable. The project is not vaporware. A user can complete the main workflow.
+
+Where the critical path weakens:
+
+- Admin sessions now survive same-node restart, but continuity across HA peers is still not guaranteed.
+- Discovery and HA are likely to inspire more confidence than they deserve.
+- The config editing workflow now merges updates safely, but broad config changes still rely on restart-required semantics for many subsystems.
 
 ### 1.3 Data Integrity
 
 Positives:
-- WAL and snapshot mechanisms exist.
-- Backups are exposed via system endpoints.
-- Lease and reservation state is persisted through the storage layer.
+
+- Data is persisted through a WAL + snapshot mechanism.
+- Lease, subnet, reservation, audit, token, and settings stores are persisted.
+- Backup creation exists.
 
 Concerns:
-- The storage layer is simpler than the documented architecture and should be evaluated based on actual limits, not planned design.
-- No explicit migration/versioning system for storage schema was found.
-- Session state is not persisted.
+
+- The documented storage model does not match the actual one, which makes operational expectations unreliable.
+- Restore exists through both CLI and REST, but there is still no broader repair/validation tooling around restored state.
+- There is no migration framework because there is no external SQL database, but there also is no broader state validation or repair tooling.
+- HA replication does not provide the level of transaction or sequencing safety implied by the product positioning.
 
 ## 2. Reliability & Error Handling
 
 ### 2.1 Error Handling Coverage
 
-Strengths:
-- REST recovery middleware exists.
-- Handlers usually return structured JSON errors.
-- Graceful server shutdown is implemented.
+What is good:
 
-Gaps:
-- No unified domain error taxonomy.
-- Some failure modes are logged but not deeply observable.
-- Hand-rolled transports increase edge-case risk.
+- The code generally checks returned errors.
+- REST middleware has panic recovery.
+- Auth flows return meaningful HTTP errors and lockout responses.
 
-Potential panic points:
-- No obvious widespread panic abuse was seen.
-- Most packages are reasonably defensive.
+What is not good enough:
+
+- There is no consistent project-wide error model.
+- Logs are not structured enough for dependable production triage.
+- Some request-path operations use `context.Background()` rather than request context.
+
+Potential panic or brittleness points:
+
+- Custom transport stacks always carry more protocol edge-case risk than standard libraries.
+- Discovery depends on host commands and OS behavior.
 
 ### 2.2 Graceful Degradation
 
-When dependencies fail:
-- This project mostly has no external runtime dependencies, which helps.
-- Discovery shell commands and network probes degrade by omission rather than crashing the server.
+External dependency profile is simple, which helps. There is no database cluster or message broker to lose.
 
-Missing patterns:
-- No retry/circuit-breaker architecture beyond webhook delivery retries.
-- No robust degraded-mode story for partial subsystem failure beyond health/status reporting.
+Still missing:
+
+- No circuit breaker or robust retry policy beyond webhook delivery.
+- Discovery cannot degrade into a clearly reduced-confidence mode; it often just reports limited signals as if they were authoritative.
+- HA does not degrade into a rigorously safe state model.
 
 ### 2.3 Graceful Shutdown
 
-Assessment: **good**
+Status: **mostly present**
 
-Observed behavior in code:
-- Signal handling for SIGINT/SIGTERM is present.
-- Context cancellation coordinates subsystem shutdown.
-- `http.Server.Shutdown` is used for REST/gRPC/MCP.
-- DHCP servers and other background services are stopped from the top-level orchestrator.
+- Server shutdown wiring exists.
+- Long-lived services are started with contexts and closed from main.
+- In-flight HTTP handling should stop reasonably well.
+
+Remaining concerns:
+
+- Session state is volatile.
+- There is no confidence that failover plus shutdown preserves auth/operator continuity.
 
 ### 2.4 Recovery
 
 Crash recovery:
-- WAL and snapshots suggest basic restart recovery support.
-- HA can recover lease state to a peer through snapshot/event sync.
 
-Remaining risk:
-- Session/auth state is not durable.
-- No documented corruption recovery procedure was found.
+- WAL replay and snapshot load provide a real recovery story for core persisted data.
+- That is a positive.
+
+Recovery gaps:
+
+- No automatic cluster-style recovery.
+- No documented corruption-repair procedure.
+- No shared session/token invalidation coordination across nodes.
 
 ## 3. Security Assessment
 
 ### 3.1 Authentication & Authorization
 
-- `[ ]` Authentication mechanism is implemented and secure
-- `[ ]` Session/token management is proper (expiry, rotation, revocation)
-- `[ ]` Authorization checks on every protected endpoint
-- `[ ]` Password hashing uses bcrypt/argon2
-- `[x]` API key management exists
-- `[ ]` CSRF protection is explicit
-- `[ ]` Rate limiting on auth endpoints is sufficient
+- [x] Authentication mechanism is implemented and usable
+- [x] Session/token management exists
+- [x] Authorization checks exist on protected mutation endpoints
+- [x] Password hashing uses bcrypt
+- [x] API token management exists
+- [ ] CSRF protection is only partially relevant and depends on cookie-based auth flows
+- [x] Rate limiting exists on auth endpoints
 
-Explanation:
-- Local auth and tokens exist.
-- Password hashing uses bcrypt.
-- Sessions are in-memory only.
-- Authorization enforcement is not trustworthy because missing identity is treated as allowed in multiple surfaces.
+Assessment:
+
+- Local auth is one of the stronger implemented subsystems.
+- The critical gap is durability and node-local state, not absence of auth.
+- LDAP remains missing despite being part of the documented security story.
 
 ### 3.2 Input Validation & Injection
 
-- `[ ]` All user inputs are validated and sanitized
-- `[x]` SQL injection protection (no SQL layer)
-- `[ ]` XSS protection is sufficient
-- `[x]` Command injection protection is mostly acceptable in current code paths
-- `[ ]` Path traversal protection is fully audited
-- `[ ]` File upload validation (not applicable)
+- [x] Most major user inputs are validated
+- [x] SQL injection risk is absent because there is no SQL backend
+- [x] React-based frontend materially reduces basic XSS risk
+- [ ] Command execution surface exists in discovery and should be treated carefully
+- [x] Path traversal risk does not appear prominent in reviewed code
+- [ ] File upload validation is not applicable because there is no upload feature
 
-Notes:
-- IPAM/config validation is decent.
-- Frontend renders server data without obvious dangerous `dangerouslySetInnerHTML`, which helps.
-- Websocket and config editing surfaces still need security review.
+Assessment:
+
+- Validation is decent.
+- Discovery's command execution model is not an obvious injection bug, but it is still an operational attack surface.
 
 ### 3.3 Network Security
 
-- `[ ]` TLS/HTTPS support and enforcement
-- `[ ]` Secure headers are comprehensive
-- `[ ]` CORS is properly configured for production
-- `[x]` No sensitive data in normal URLs/query params was broadly observed
-- `[ ]` Secure cookie configuration is reliably enforced
+- [x] TLS/HTTPS support exists for REST/gRPC/MCP
+- [x] Secure headers middleware exists
+- [x] CORS has meaningful guardrails
+- [x] Sensitive auth state is not passed in query strings
+- [x] Session cookies have secure configuration support
 
-Notes:
-- No TLS implementation exists.
-- CORS defaults are permissive.
-- Sample config disables secure cookies.
+Caveat:
+
+- HA traffic is not equivalently hardened.
 
 ### 3.4 Secrets & Configuration
 
-- `[ ]` No hardcoded secrets in source code
-- `[ ]` No secrets in git history
-- `[x]` Environment variable based configuration exists
-- `[ ]` `.env` files in `.gitignore` (not relevant/not observed)
-- `[ ]` Sensitive config values masked in logs
-
-Notes:
-- The code does not embed actual long-lived secrets, but it does bootstrap an `admin` password when no hash is configured.
-- Config responses do mask some keys, which is good.
+- [x] No hardcoded secrets were found in source during this audit
+- [x] Environment/config-file based secret inputs exist
+- [x] Sensitive config export attempts to mask secrets
+- [ ] `.env` conventions are not central here
+- [ ] Sensitive log redaction has not been systematically verified
 
 ### 3.5 Security Vulnerabilities Found
 
 | Severity | Finding | Location |
 |---|---|---|
-| Critical | REST authz fails open on missing identity | `internal/api/rest/router.go:943-947` |
-| Critical | gRPC authz fails open on missing identity | `internal/api/grpc/server.go:283-292` |
-| Critical | MCP authz fails open on missing identity | `internal/api/mcp/handlers.go:792-800` |
-| High | Websocket upgrade lacks origin/auth checks | `internal/api/websocket/client.go:52-79` |
-| High | Wildcard CORS default/sample config | `internal/config/config.go:290`, `configs/monsoon.yaml:44`, `internal/api/rest/middleware.go:67-90` |
-| High | Default admin bootstrap path can create `admin/admin` | `internal/auth/local.go:18-35`, `configs/monsoon.yaml:64-70` |
-| Medium | No TLS support | project-wide |
+| Medium | sessions are durable on one node but still unsuitable for HA-safe shared auth continuity | `internal/auth/session.go` |
+| High | HA transport is custom plaintext TCP unless protected externally | `internal/ha/*` |
+| Low | HA shared-secret comparison was previously timing-sensitive and should remain regression-tested | `internal/ha/heartbeat.go` |
+| Low | config update semantics were previously unsafe and should remain regression-tested | `cmd/monsoon/main.go` |
+| Medium | discovery health/confidence is overstated compared with actual sensing behavior | `internal/discovery/engine.go` |
 
 ## 4. Performance Assessment
 
 ### 4.1 Known Performance Issues
 
-- Address listing expands pool state rather than querying a compact materialized structure.
-- Utilization math is not tied to actual pool capacity in at least two places.
-- Frontend reloads many endpoints every 15 seconds regardless of route.
-- JS bundle is 438027 bytes before gzip with no lazy loading.
-- Discovery relies on shell/network probing and is not tuned for large-scale environments.
+- IPAM utilization reporting is not just approximate; it is structurally wrong for production capacity decisions.
+- Storage is simple and likely fast at small scale, but the sorted-slice approach is not a long-term architecture for large cardinality.
+- Dashboard startup is chatty and followed by 15-second polling.
+- Frontend bundle is moderately large for an admin interface and not lazily split.
 
 ### 4.2 Resource Management
 
-- Connection pooling: standard HTTP server only; no DB pool needed.
-- Memory limits/OOM protection: not present.
-- File descriptors: normal server behavior, not explicitly budgeted.
-- Goroutine leak potential: moderate risk in long-running websocket/discovery/HA paths, but nothing obvious from static review.
+- WAL and snapshot files are managed explicitly.
+- Goroutine lifecycle is mostly explicit.
+- Webhook and WebSocket queues are bounded.
+- No memory ceilings, OOM strategies, or explicit resource budgets are documented.
 
 ### 4.3 Frontend Performance
 
-- Bundle size is acceptable for an internal admin UI, but not optimized.
-- No route-level lazy loading.
-- No image optimization concerns of note.
-- Core Web Vitals are not measured.
+- `npm run build` succeeded
+- Build output:
+  - `dist/index.html` `0.48 kB` (`0.30 kB` gzip)
+  - CSS `42.67 kB` (`7.74 kB` gzip)
+  - JS `442.57 kB` (`136.29 kB` gzip)
+
+Assessment:
+
+- Acceptable for internal tooling.
+- Not optimized.
+- No evidence of route-based code splitting, prefetch strategy, or performance budgets.
 
 ## 5. Testing Assessment
 
 ### 5.1 Test Coverage Reality Check
 
 What is actually tested:
-- Transport layers for REST, gRPC, MCP, websocket
-- Core DHCPv4/DHCPv6 packet/handler paths
-- HA election/failover/witness behavior
-- IPAM reservation/subnet/address basics
-- Migration parsing
-- Webhook delivery
 
-Critical paths still weakly tested or untested:
-- Main process orchestration in `cmd/monsoon`
-- Storage engine internals
-- Config reload/update edge cases
-- Authz bypass regressions
-- Frontend behavior
+- Most backend packages have real unit and handler-style tests.
+- Storage, config, DHCP, lease, metrics, and several API packages are meaningfully covered.
+- Frontend has only a small set of tests.
+
+Critical paths without enough test depth:
+
+- End-to-end DHCP serving with operator workflow
+- HA failover correctness
+- Discovery accuracy and failure behavior
+- Config update safety
+- Full dashboard operator flows
+
+Quality assessment:
+
+- Better than average for an early-stage infra product.
+- Still not enough to justify the current level of production ambition.
 
 ### 5.2 Test Categories Present
 
-- `[x]` Unit tests - 21 files, 38 test functions
-- `[x]` Integration tests - present in API, HA, migration, websocket packages
-- `[x]` API/endpoint tests - present
-- `[ ]` Frontend component tests - 0 files
-- `[ ]` E2E tests - 0 files
-- `[ ]` Benchmark tests - 0 files
-- `[ ]` Fuzz tests - 0 files
-- `[ ]` Load tests - absent
+- [x] Unit tests - 46 Go test files
+- [x] Integration tests - some handler/store style tests
+- [x] API/endpoint tests - present
+- [x] Frontend component/client tests - 3 files, 6 tests
+- [ ] E2E tests - absent
+- [ ] Benchmark tests - absent
+- [ ] Fuzz tests - absent
+- [ ] Load tests - absent
 
 ### 5.3 Test Infrastructure
 
-- `[x]` Tests can run locally with `go test ./...`
-- `[x]` Many tests use temp dirs and do not require external services
-- `[x]` Test data/fixtures are mostly self-contained
-- `[ ]` CI runs tests on every PR
-- `[ ]` Race-test setup is reliable
+- [x] Tests run locally with `go test ./...`
+- [x] Tests do not require a large external services stack
+- [x] CI runs tests on push and PR
+- [ ] Race tests are not currently exercised successfully in this environment
+- [ ] Coverage gates are not enforced
+
+Measured backend coverage: **65.3%**
 
 ## 6. Observability
 
 ### 6.1 Logging
 
-- `[ ]` Structured logging (JSON format)
-- `[ ]` Log levels properly used
-- `[ ]` Request/response logging with request IDs
-- `[ ]` Sensitive data is definitely excluded
-- `[ ]` Log rotation configured
-- `[ ]` Error logs include stack traces
+- [ ] Structured logging is not mature
+- [ ] Log levels are not backed by a richer logging framework
+- [x] Request IDs exist
+- [ ] Sensitive log verification is incomplete
+- [ ] Log rotation is not part of the app
+- [ ] Stack-trace-rich error reporting is limited
 
-Reality:
-- Plain `log.Printf` request and subsystem logging.
-- Not enough for production observability.
+Assessment:
+
+- Logging is serviceable for development and small deployments.
+- It is not yet the logging story of a production-grade network appliance.
 
 ### 6.2 Monitoring & Metrics
 
-- `[x]` Health check endpoint exists
-- `[ ]` Prometheus/metrics endpoint
-- `[ ]` Key business metrics tracked comprehensively
-- `[ ]` Resource utilization metrics
-- `[ ]` Alert-worthy conditions identified
-
-Reality:
-- There is a custom metrics registry package, but the promised `/metrics` surface is not implemented.
+- [x] Health check endpoint exists
+- [x] Readiness endpoint exists
+- [x] Metrics endpoint exists
+- [ ] Business metrics are shallow
+- [ ] Alert guidance is absent
+- [ ] Readiness semantics are too shallow for robust operations
 
 ### 6.3 Tracing
 
-- `[ ]` Request tracing
-- `[ ]` Correlation IDs across service boundaries
-- `[ ]` Profiling endpoints
+- [ ] Distributed tracing support absent
+- [ ] Correlation across all boundaries incomplete
+- [ ] `pprof` or profiling endpoints not present
 
 ## 7. Deployment Readiness
 
 ### 7.1 Build & Package
 
-- `[x]` Reproducible local builds are mostly plausible
-- `[x]` Multi-platform binary compilation is supported in `Makefile`
-- `[x]` Docker image uses a minimal final base (`scratch`)
-- `[ ]` Docker image size/security hardening is fully optimized
-- `[ ]` Version information embedding is fully validated
+- [x] Reproducible-enough local builds are possible
+- [x] Multi-platform build targets exist in `Makefile`
+- [x] Docker image exists
+- [x] Runtime image is minimal
+- [x] Version info can be injected through linker flags in `Makefile`
+
+Deployment caveats:
+
+- DHCP needs privileged networking and environment-specific capabilities.
+- The `scratch` image is lean but operationally unforgiving.
+- No release automation config is present.
 
 ### 7.2 Configuration
 
-- `[x]` Config via file and env vars exists
-- `[x]` Sensible defaults mostly exist
-- `[x]` Configuration validation on startup exists
-- `[ ]` Different configs for dev/staging/prod are formalized
-- `[ ]` Feature flags system (not needed yet)
+- [x] Config is file-driven and validated
+- [x] Sensible defaults exist
+- [x] Startup validation exists
+- [ ] Different environment profiles are not formalized
+- [ ] Feature flags are limited to config fields, not a dedicated system
 
 ### 7.3 Database & State
 
-- `[ ]` Database migration system
-- `[ ]` Rollback capability
-- `[ ]` Seed data for initial setup
-- `[ ]` Backup strategy documented
-
-Notes:
-- Backup endpoints exist.
-- Formal storage evolution management does not.
+- [x] Persistent state exists through the embedded engine
+- [ ] There is no external DB migration system because there is no DB
+- [ ] Rollback and repair procedures are not documented
+- [ ] Backup strategy exists but restore/documentation is incomplete
 
 ### 7.4 Infrastructure
 
-- `[ ]` CI/CD pipeline configured
-- `[ ]` Automated testing in pipeline
-- `[ ]` Automated deployment capability
-- `[ ]` Rollback mechanism
-- `[ ]` Zero-downtime deployment support
+- [x] CI pipeline configured
+- [x] Automated testing in pipeline
+- [ ] Automated deployment absent
+- [ ] Rollback mechanism undocumented
+- [ ] Zero-downtime deployment support not demonstrated
 
 ## 8. Documentation Readiness
 
-- `[ ]` README is accurate and complete
-- `[x]` Installation/setup guide mostly works
-- `[ ]` API documentation is comprehensive
-- `[ ]` Configuration reference exists in a production-accurate form
-- `[ ]` Troubleshooting guide
-- `[ ]` Architecture overview for new contributors is accurate
+- [ ] README is not fully accurate
+- [ ] Installation/setup guidance is incomplete for production
+- [ ] API documentation is incomplete and partly inaccurate
+- [ ] Configuration reference exists in code/config but not in polished docs
+- [ ] Troubleshooting guide absent
+- [ ] Architecture overview exists, but is not trustworthy in every claim
+
+Documentation is the weakest category in this audit because the issue is not missing text. The issue is **misleading text**.
 
 ## 9. Final Verdict
 
 ### Production Blockers (MUST fix before any deployment)
 
-1. Authorization logic fails open in REST, gRPC, and MCP when identity is missing.
-2. No TLS support and insecure sample/default auth/cookie/CORS posture.
-3. Websocket upgrade path lacks origin/auth hardening.
-4. No CI and no frontend automated tests.
-5. Documentation materially misrepresents actual feature completeness and security posture.
+1. Sessions are restart-durable on one node, but they are still not suitable for HA-safe shared auth continuity.
+2. Discovery, rogue-DHCP detection, and related UI/documentation materially overstate what the product can currently observe.
+3. HA implementation is not strong enough to justify production failover claims.
+4. Documentation and operator expectations still lag behind the now-safer config update behavior.
+5. Documentation misrepresents storage architecture, API breadth, and feature completeness.
 
 ### High Priority (Should fix within first week of production)
 
-1. Replace fake utilization calculations with real capacity math.
-2. Resolve Go toolchain mismatch and race-test prerequisites.
-3. Add structured logging and a real metrics endpoint.
-4. Clarify HA support level as active-passive only unless load-sharing/WAL streaming is finished.
+1. Keep regression coverage on the now-correct IPAM utilization path and extend it with larger-subnet edge cases.
+2. Improve logging structure and operational diagnostics.
+3. Add race-test coverage in CI and at least one end-to-end happy-path test.
+4. Clarify deployment requirements for DHCP privileges, TLS, persistence, and HA networking.
 
 ### Recommendations (Improve over time)
 
-1. Split the oversized REST router and frontend dashboard hook into smaller units.
-2. Decide whether to simplify the storage story in docs or invest in the documented engine architecture.
-3. Add route-based lazy loading and frontend tests as the dashboard grows.
+1. Split the large dashboard data hook into domain-specific hooks and reduce polling.
+2. Revisit custom transport choices if interoperability or maintenance becomes painful.
+3. Either simplify the official product promise or invest in finishing the enterprise-grade features the docs currently advertise.
 
 ### Estimated Time to Production Ready
 
 - From current state: **6-8 weeks** of focused development
-- Minimum viable production (critical fixes only): **7-10 days**
-- Full production readiness (all categories green): **12-16 weeks**
+- Minimum viable production for a controlled single-node deployment: **10-14 days**
+- Full production readiness aligned with current docs/spec: **10-14 weeks**
 
 ### Go/No-Go Recommendation
 
@@ -357,6 +386,10 @@ Notes:
 
 Justification:
 
-The project is functionally impressive for its size, but it is not safe to call production-ready in its current state. The core issue is not missing polish. The core issue is that the authorization model can fail open in three separate API surfaces. That alone is a release blocker. On top of that, the deployment posture is still missing TLS, restrictive CORS defaults, hardened websocket ingress, CI coverage, and accurate operational documentation.
+MonsoonDHCP is not a broken project. The core service works, the codebase is cleaner than many projects at this stage, and the DHCP/IPAM foundation is real. If the question were "is this repo promising?" the answer would be yes. If the question is "should this be deployed as a production-grade DHCP/IPAM platform exactly as currently described by its docs?" the answer is no.
 
-If the scope is narrowed to an internal, single-operator, carefully firewalled lab deployment, the software is usable. If the question is whether this should be deployed as a production network control plane with confidence, the answer is no. The minimum safe path is to fix the fail-open authz bugs, harden auth/bootstrap defaults, define a real TLS/reverse-proxy story, add automated regression coverage for those areas, and rewrite the docs so operators are not making decisions based on capabilities that do not actually exist yet.
+The biggest reason is not a single crash bug. It is trustworthiness. Operators need the product to do what it says, report what it actually knows, and fail in predictable ways. Today the code and the documentation are out of alignment, sessions are not durable, HA is too lightweight for the implied guarantees, and discovery over-claims its capabilities. That combination creates operational risk far beyond what the passing test suite alone would suggest.
+
+The minimum path to a conditional production deployment is narrow but realistic: treat the product as a single-node system, harden session/config behavior, narrow the supported-feature claims, and stop advertising HA/discovery capabilities beyond what the code can truly guarantee. Until then, this should not be presented as production-ready.
+
+

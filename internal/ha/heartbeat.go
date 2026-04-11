@@ -3,6 +3,7 @@ package ha
 import (
 	"bufio"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -72,7 +73,7 @@ func validateSecret(expected, actual string) error {
 	if strings.TrimSpace(expected) == "" {
 		return nil
 	}
-	if actual != expected {
+	if subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) != 1 {
 		return fmt.Errorf("invalid peer secret")
 	}
 	return nil

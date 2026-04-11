@@ -1,7 +1,6 @@
 package rest
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -38,6 +37,9 @@ type createTokenRequest struct {
 func registerAuthRoutes(mux *http.ServeMux, service *auth.Service, secureCookie func() bool, logger *audit.Logger, registry *metrics.Registry) {
 	mux.HandleFunc("POST /api/v1/auth/bootstrap", func(w http.ResponseWriter, r *http.Request) {
 		setNoStore(w)
+		if !requireLocalAuthMode(w, service, registry, "bootstrap") {
+			return
+		}
 		var payload bootstrapRequest
 		if err := decodeJSONBody(r, &payload); err != nil {
 			recordAuthRequestMetric(registry, "bootstrap", "invalid_payload")
@@ -76,6 +78,9 @@ func registerAuthRoutes(mux *http.ServeMux, service *auth.Service, secureCookie 
 
 	mux.HandleFunc("POST /api/v1/auth/login", func(w http.ResponseWriter, r *http.Request) {
 		setNoStore(w)
+		if !requireLocalAuthMode(w, service, registry, "login") {
+			return
+		}
 		var payload loginRequest
 		if err := decodeJSONBody(r, &payload); err != nil {
 			recordAuthRequestMetric(registry, "login", "invalid_payload")
@@ -174,6 +179,9 @@ func registerAuthRoutes(mux *http.ServeMux, service *auth.Service, secureCookie 
 
 	mux.HandleFunc("POST /api/v1/auth/password", func(w http.ResponseWriter, r *http.Request) {
 		setNoStore(w)
+		if !requireLocalAuthMode(w, service, registry, "password") {
+			return
+		}
 		identity, ok := IdentityFromContext(r.Context())
 		if !ok {
 			recordAuthRequestMetric(registry, "password", "unauthorized")
@@ -305,7 +313,7 @@ func registerAuthRoutes(mux *http.ServeMux, service *auth.Service, secureCookie 
 			WriteError(w, http.StatusBadRequest, "missing_id", "token id is required")
 			return
 		}
-		if err := service.RevokeToken(context.Background(), tokenID); err != nil {
+		if err := service.RevokeToken(r.Context(), tokenID); err != nil {
 			recordAuthRequestMetric(registry, "tokens.revoke", "not_found")
 			WriteError(w, http.StatusNotFound, "token_not_found", "token not found")
 			return
@@ -374,6 +382,15 @@ func writeLockedAuthError(w http.ResponseWriter, err error) bool {
 	w.Header().Set("Retry-After", strconv.Itoa(lockedErr.RetryAfter(time.Now().UTC())))
 	WriteError(w, http.StatusTooManyRequests, "account_locked", "account is temporarily locked")
 	return true
+}
+
+func requireLocalAuthMode(w http.ResponseWriter, service *auth.Service, registry *metrics.Registry, endpoint string) bool {
+	if service == nil || service.SupportsLocalAuth() {
+		return true
+	}
+	recordAuthRequestMetric(registry, endpoint, "unsupported_mode")
+	WriteError(w, http.StatusNotImplemented, "auth_mode_unsupported", "configured auth mode does not support local username/password operations in this build")
+	return false
 }
 
 func requireRoleWithService(w http.ResponseWriter, r *http.Request, service *auth.Service, requiredRole string) bool {

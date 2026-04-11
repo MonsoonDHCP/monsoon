@@ -36,6 +36,7 @@ import {
   upsertReservation,
   upsertSubnet,
   createSystemBackup,
+  restoreSystemBackup,
 } from "@/lib/api"
 import { connectLiveSocket, type LiveEvent } from "@/lib/ws"
 import type {
@@ -103,6 +104,7 @@ type DashboardState = {
   createToken: (payload: { name: string; role: string; expires_in_hours?: number; description?: string }) => Promise<void>
   revokeToken: (id: string) => Promise<void>
   createBackup: () => Promise<void>
+  restoreBackup: (payload: { name?: string; path?: string }) => Promise<void>
   refreshBackups: () => Promise<void>
   refreshSystemConfig: () => Promise<void>
   clearNotifications: () => void
@@ -361,6 +363,14 @@ export function useDashboardData(): DashboardState {
     await refreshBackups()
   }, [refreshBackups])
 
+  const restoreBackup = useCallback(
+    async (payload: { name?: string; path?: string }) => {
+      await restoreSystemBackup(payload)
+      await load()
+    },
+    [load],
+  )
+
   const requestManualFailover = useCallback(
     async (reason: string) => {
       await triggerHAFailover(reason)
@@ -573,6 +583,7 @@ export function useDashboardData(): DashboardState {
         createToken,
         revokeToken,
         createBackup,
+        restoreBackup,
         refreshBackups,
         refreshSystemConfig,
         clearNotifications,
@@ -620,6 +631,7 @@ export function useDashboardData(): DashboardState {
       createToken,
       revokeToken,
       createBackup,
+      restoreBackup,
       refreshBackups,
       refreshSystemConfig,
       clearNotifications,

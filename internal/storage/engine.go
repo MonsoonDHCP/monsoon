@@ -171,6 +171,49 @@ func (e *Engine) CreateSnapshot() error {
 	return WriteSnapshot(path, e.trees)
 }
 
+func (e *Engine) RestoreSnapshot(path string) error {
+	trees, err := ReadSnapshot(path)
+	if err != nil {
+		return err
+	}
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return fmt.Errorf("engine closed")
+	}
+
+	merged := make(map[string]*BTree, len(e.trees)+len(trees))
+	for name := range e.trees {
+		merged[name] = NewBTree()
+	}
+	for name, tree := range trees {
+		merged[name] = tree
+	}
+
+	if err := WriteSnapshot(filepath.Join(e.dir, "snapshot.bin"), merged); err != nil {
+		return err
+	}
+
+	if e.wal != nil {
+		if err := e.wal.Close(); err != nil {
+			return err
+		}
+	}
+	walDir := filepath.Join(e.dir, "wal")
+	if err := os.RemoveAll(walDir); err != nil {
+		return err
+	}
+	wal, err := OpenWAL(walDir)
+	if err != nil {
+		return err
+	}
+
+	e.trees = merged
+	e.wal = wal
+	return nil
+}
+
 func (e *Engine) loadSnapshot() error {
 	path := filepath.Join(e.dir, "snapshot.bin")
 	if _, err := os.Stat(path); err != nil {

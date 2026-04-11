@@ -54,12 +54,12 @@ export function AuthGate({ busy, error, onLogin, onBootstrap }: AuthGateProps) {
 
       <div className="relative grid w-full max-w-5xl gap-4 lg:grid-cols-[1.2fr_1fr]">
         <Card className="border-border/70 bg-card/80 backdrop-blur">
-          <CardHeader className="space-y-3">
+        <CardHeader className="space-y-3">
             <Badge variant="success" className="w-fit">
               Monsoon Console
             </Badge>
             <CardTitle className="text-3xl leading-tight">Secure access to DHCP + IPAM control plane</CardTitle>
-            <CardDescription>Authenticate with local credentials or bootstrap the first admin account.</CardDescription>
+            <CardDescription>Authenticate with local credentials or bootstrap the first local admin account.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 text-sm text-muted-foreground">
             <div className="rounded-xl border border-border/70 bg-background/50 p-3">
@@ -80,7 +80,7 @@ export function AuthGate({ busy, error, onLogin, onBootstrap }: AuthGateProps) {
         <Card className="border-border/70 bg-card/90 backdrop-blur">
           <CardHeader>
             <CardTitle>Sign In</CardTitle>
-            <CardDescription>Use your operator account to continue.</CardDescription>
+            <CardDescription>Use your local operator account to continue.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <input

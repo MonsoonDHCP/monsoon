@@ -12,7 +12,7 @@ export function DiscoveryPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-semibold tracking-tight">Discovery Operations</h2>
-        <p className="text-sm text-muted-foreground">Active scan orchestration and rogue DHCP detection workflow.</p>
+        <p className="text-sm text-muted-foreground">Active network scan orchestration with conflict tracking and limited rogue DHCP signal reporting.</p>
         {!canMutate && <Badge className="mt-2" variant="warning">Read-only role</Badge>}
       </div>
 
@@ -49,7 +49,7 @@ export function DiscoveryPage() {
               <Radar className="size-4 text-teal-400" />
               Rogue detector
             </CardTitle>
-            <CardDescription>Passive monitoring for unauthorized DHCPOFFER signals.</CardDescription>
+            <CardDescription>Status for currently configured active discovery probes and any rogue findings persisted from scans.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-muted-foreground">
             <div className="rounded-lg bg-muted/40 px-3 py-2">Sensor status: {discovery?.sensor_online ? "online" : "offline"}</div>

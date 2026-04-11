@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { ApiError, fetchHealth, login } from "@/lib/api"
+import { ApiError, fetchHealth, login, restoreSystemBackup } from "@/lib/api"
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -51,6 +51,25 @@ describe("api client", () => {
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ username: "admin", password: "wrong-password" }),
+      }),
+    )
+  })
+
+  it("posts restore requests to the system restore endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: { name: "monsoon-existing.snapshot" } }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    await expect(restoreSystemBackup({ name: "monsoon-existing.snapshot" })).resolves.toEqual({ name: "monsoon-existing.snapshot" })
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/system/restore",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ name: "monsoon-existing.snapshot" }),
       }),
     )
   })

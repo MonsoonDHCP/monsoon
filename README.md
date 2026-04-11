@@ -27,6 +27,16 @@ Network IP management today is fragmented across multiple tools:
 
 **Monsoon fills this gap:** one binary with embedded storage, embedded web dashboard, real-time events, and AI-ready MCP integration.
 
+## Supported In This Build
+
+- Local authentication only. `auth.type` must be `local` in the current binary.
+- Storage-backed browser sessions persist across restart on the same node.
+- `PUT /api/v1/system/config` uses merge-on-write semantics and does not reset omitted fields to defaults.
+- Snapshot operations are available through CLI backup/restore and REST backup/list/restore endpoints.
+- Discovery currently provides scheduled/manual scans, lease/reservation-backed conflict reporting, and limited active probe enrichment.
+- True passive rogue-DHCP sensing is not implemented yet, so the rogue feed may legitimately be empty.
+- HA exists as a basic heartbeat/lease-sync feature and should still be treated as limited-scope operational support rather than hardened clustering.
+
 ---
 
 ## Key Features
@@ -42,9 +52,9 @@ Network IP management today is fragmented across multiple tools:
 ### IPAM Engine
 - **Hierarchical Subnet Tree** — `/8 → /16 → /24` parent/child navigation across RFC 1918 space
 - **CIDR Tools** — Split, merge, supernet, next-available, overlap detection
-- **Capacity Planning** — Utilization %, exhaustion forecast, automatic alerts
-- **Network Discovery** — ARP scan, ICMP ping sweep, TCP probe, SNMP walk, passive DHCP learning
-- **Conflict Detection** — Duplicate IP, rogue DHCP, orphaned lease, static/DHCP mismatches
+- **Capacity Planning** — Subnet summaries and DHCP-pool utilization based on configured pool sizes
+- **Network Discovery** — Scheduled/manual scans with ARP, ping, TCP, DNS, and Monsoon-owned lease/reservation state
+- **Conflict Detection** — Duplicate IP/MAC inconsistencies derived from lease and reservation state
 - **Audit Trail** — Full record of every change with actor, action, old/new values
 
 ### Embedded Storage
@@ -67,7 +77,8 @@ Network IP management today is fragmented across multiple tools:
 ### Operations
 - **Hot Reload** - `SIGHUP` live-applies REST/auth safety controls: CORS allowlist, trusted proxies, general/auth rate limits, auth enforcement, and secure session cookie
 - **Restart Signaling** - Reloaded changes to listeners, TLS, DHCP/discovery/HA runtime, auth backend/session lifetime, metrics path, and webhooks are accepted but reported as restart-required
-- **HA / Failover** - Active-passive or split-scope load sharing, TCP lease synchronization
+- **HA / Failover** - Basic active-passive heartbeat and lease synchronization for controlled environments
+- **Backup & Restore** - CLI snapshot restore plus REST backup/list/restore operations
 - **Prometheus Metrics** - DHCP, IPAM, storage, API, WebSocket, HA metrics
 - **Structured Logging** - Component-level JSON logs
 - **Migration Tools** - ISC DHCP, Kea, phpIPAM, NetBox, generic CSV import
@@ -148,7 +159,7 @@ If `api.rest.tls_cert_file` and `api.rest.tls_key_file` are both set, Monsoon se
 
 ### 3. Complete first-time admin bootstrap
 
-With local auth enabled and `auth.local.admin_password_hash` left empty, Monsoon starts in first-run mode and waits for exactly one bootstrap request:
+The current build supports **local auth only**. With local auth enabled and `auth.local.admin_password_hash` left empty, Monsoon starts in first-run mode and waits for exactly one bootstrap request:
 
 ```bash
 curl -X POST http://localhost:8067/api/v1/auth/bootstrap \
@@ -226,40 +237,52 @@ monsoon [flags]
 
 Base URL: `http://localhost:8067/api/v1`
 
-### Subnets
+### Authentication
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/subnets` | List all (tree or flat) |
-| POST | `/subnets` | Create subnet |
-| GET | `/subnets/{id}` | Get details |
-| PUT | `/subnets/{id}` | Update |
-| DELETE | `/subnets/{id}` | Delete |
-| GET | `/subnets/{id}/utilization` | Usage statistics |
-| POST | `/subnets/{id}/next-available` | Next free IP |
-| POST | `/subnets/{id}/split` | Split subnet |
+| POST | `/auth/bootstrap` | Create the first local admin |
+| POST | `/auth/login` | Username/password login |
+| POST | `/auth/logout` | Revoke current browser session |
+| GET | `/auth/me` | Current identity |
+| POST | `/auth/password` | Change local password |
+| GET | `/auth/tokens` | List API tokens |
+| POST | `/auth/tokens` | Create API token |
+| DELETE | `/auth/tokens/{id}` | Revoke API token |
+
+### Subnets, Addresses, Reservations
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/subnets` | List subnet summaries |
+| GET | `/subnets/raw` | List raw subnet records |
+| POST | `/subnets` | Create/update subnet |
+| PUT | `/subnets` | Create/update subnet |
+| DELETE | `/subnets?cidr=...` | Delete subnet |
+| GET | `/addresses` | Search/filter IPs |
+| GET | `/addresses/{ip}` | Address details |
+| GET | `/reservations` | List reservations |
+| GET | `/reservations/{mac}` | Reservation details |
+| POST | `/reservations` | Create/update reservation |
+| PUT | `/reservations` | Create/update reservation |
+| DELETE | `/reservations?mac=...` | Delete reservation |
 
 ### Leases
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/leases` | List active leases |
+| GET | `/leases` | List leases |
 | GET | `/leases/{ip}` | Lease details |
-| DELETE | `/leases/{ip}` | Force-release |
-| GET | `/leases/expiring` | Leases expiring soon |
-
-### Addresses & Reservations
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/addresses` | Search/filter IPs |
-| GET | `/addresses/{ip}/history` | Assignment history |
-| GET | `/reservations` | List reservations |
-| POST | `/reservations` | MAC → IP fixed mapping |
+| POST | `/leases/{ip}/release` | Mark lease as released |
+| POST | `/leases/{ip}/reservation` | Convert lease to reservation |
 
 ### Discovery & Audit
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/discovery/scan` | Trigger manual scan |
 | GET | `/discovery/conflicts` | Detected conflicts |
-| GET | `/discovery/rogue-dhcp` | Rogue DHCP servers |
+| GET | `/discovery/status` | Discovery status |
+| GET | `/discovery/progress` | Current scan progress |
+| GET | `/discovery/results` | List scan results |
+| GET | `/discovery/results/{id}` | Read one scan result |
+| GET | `/discovery/rogue` | Persisted rogue findings, if any |
 | GET | `/audit` | Query audit log |
 
 ### System
@@ -270,7 +293,9 @@ Base URL: `http://localhost:8067/api/v1`
 | GET | `/system/info` | Runtime info plus `config_reload` restart-pending status |
 | GET/PUT | `/system/config` | Configuration snapshot/update; response `meta.reload` shows hot-reload vs restart-required state |
 | POST | `/system/backup` | Create snapshot |
-| GET | `/system/metrics` | Prometheus metrics |
+| GET | `/system/config/export` | Export current config as YAML or JSON |
+| GET | `/system/backups` | List snapshots |
+| POST | `/system/restore` | Restore snapshot by name/path |
 
 ### gRPC Health
 
@@ -291,7 +316,7 @@ Base URL: `http://localhost:8067/api/v1`
 {"type": "subnet.exhaustion", "data": {"subnet": "10.0.1.0/24", "utilization": 0.95}}
 ```
 
-For the complete endpoint list, see [.project/SPECIFICATION.md](.project/SPECIFICATION.md).
+For the current implementation, prefer `.project/ANALYSIS.md` or `internal/api/rest/router.go` over the aspirational specification.
 
 ---
 
@@ -306,9 +331,12 @@ Security-sensitive defaults to be aware of:
 - `api.grpc.tls_cert_file` / `api.grpc.tls_key_file` and `api.mcp.tls_cert_file` / `api.mcp.tls_key_file` follow the same all-or-nothing rule.
 - `api.rest.auth_rate_limit` applies a stricter per-IP limit to login, bootstrap, logout, password, and token mutation routes on top of the general API limiter.
 - `auth.session.secure: true` means browsers will only send the session cookie over HTTPS.
+- This build validates `auth.type: local`; LDAP configuration from planning docs is not supported by the current binary.
 - `auth.local.max_failed_attempts` and `auth.local.lockout_duration` add a user-level temporary lockout after repeated local password failures.
 - Password changes revoke existing browser sessions for that user and rotate the current session cookie automatically.
+- Browser sessions are persisted in storage and survive same-node restarts, but they are still not shared across HA peers.
 - Leaving `auth.local.admin_password_hash` empty no longer creates a default admin account. Use bootstrap or provide a bcrypt hash.
+- `POST /api/v1/system/restore` and CLI `--restore` both perform snapshot restore against the storage engine.
 - REST responses include defensive headers by default, including CSP, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, and HSTS when the request is served over HTTPS or arrives through an HTTPS reverse proxy.
 - `/metrics` now exports auth outcome counters and auth rate-limit counters in addition to the existing HA metrics.
 - `/metrics` also exports low-cardinality `monsoon_security_events_total{event,surface}` counters for alerting on auth failures, account lockouts, CSRF rejects, and auth rate limits.
@@ -516,17 +544,21 @@ Current foundation already in place:
 - Reloaded settings that change listeners, TLS, DHCP/discovery/HA runtime, auth backend/session lifetime, metrics path, or webhook dispatcher are accepted into config and reported as restart-required
 - `GET /api/v1/system/info` exposes `config_reload`
 - `GET/PUT /api/v1/system/config` include reload status under `meta.reload`
+- `PUT /api/v1/system/config` now merges into the existing config snapshot instead of resetting omitted fields
 - Storage foundation: WAL + sorted KV tree + snapshots + engine facade
+- Storage-backed auth sessions survive restart on the same node
 - DHCPv4 packet/options/handler/server baseline
 - Lease state/store/expiry sweeper
 - REST API shell + lease endpoints + middleware
 - Storage-backed IPAM subnet engine with overlap validation and config seeding
 - Subnet CRUD API (`GET/POST/PUT/DELETE /api/v1/subnets`, `GET /api/v1/subnets/raw`)
-- Discovery status/scan API (`GET /api/v1/discovery/status`, `POST /api/v1/discovery/scan`)
+- Discovery status/scan/results API (`GET /api/v1/discovery/status`, `GET /api/v1/discovery/results`, `POST /api/v1/discovery/scan`)
 - Persistent UI settings API (`GET/PUT /api/v1/settings/ui`)
+- Backup/list/restore API (`GET /api/v1/system/backups`, `POST /api/v1/system/backup`, `POST /api/v1/system/restore`)
 - React dashboard shell and responsive pages
 
 Notes:
+- Discovery and rogue-DHCP language in older docs/specs is broader than the current implementation. Treat the present feature as active scan orchestration plus lease/reservation-aware conflict reporting.
 - DHCPv4 raw-socket support and deeper RFC edge cases are planned in upcoming iterations.
 - The UI currently targets Monsoon REST endpoints and is production-buildable.
 

@@ -37,6 +37,11 @@ type SystemBackup struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type RestoreRequest struct {
+	Name string `json:"name,omitempty"`
+	Path string `json:"path,omitempty"`
+}
+
 type RouterDeps struct {
 	LeaseStore           lease.Store
 	IPAMEngine           *ipam.Engine
@@ -69,6 +74,7 @@ type RouterDeps struct {
 	UpdateConfig         func(context.Context, map[string]any) (any, error)
 	CreateBackup         func(context.Context) (SystemBackup, error)
 	ListBackups          func(context.Context) ([]SystemBackup, error)
+	RestoreBackup        func(context.Context, RestoreRequest) (SystemBackup, error)
 }
 
 func RegisterRoutes(mux *http.ServeMux, deps RouterDeps) error {
@@ -249,6 +255,27 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 			return
 		}
 		WriteJSON(w, http.StatusOK, backup, nil)
+	})
+
+	mux.HandleFunc("POST /api/v1/system/restore", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRoleForMutation(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
+		if deps.RestoreBackup == nil {
+			WriteError(w, http.StatusNotImplemented, "restore_unavailable", "restore operation is not configured")
+			return
+		}
+		var payload RestoreRequest
+		if err := decodeJSONBody(r, &payload); err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_payload", err.Error())
+			return
+		}
+		restored, err := deps.RestoreBackup(r.Context(), payload)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "backup_restore_failed", err.Error())
+			return
+		}
+		WriteJSON(w, http.StatusOK, restored, nil)
 	})
 }
 
@@ -593,7 +620,7 @@ func registerLeaseRoutes(mux *http.ServeMux, store lease.Store, engine *ipam.Eng
 		l.State = lease.StateReleased
 		l.ExpiryTime = now
 		l.UpdatedAt = now
-		if err := store.Upsert(context.Background(), l); err != nil {
+		if err := store.Upsert(r.Context(), l); err != nil {
 			WriteError(w, http.StatusInternalServerError, "lease_release_failed", err.Error())
 			return
 		}
@@ -1074,8 +1101,8 @@ func registerDiscoveryRoutes(mux *http.ServeMux, engine *discovery.Engine, broke
 }
 
 func registerSettingsRoutes(mux *http.ServeMux, settings uisettings.UIStore, broker *events.Broker, logger *audit.Logger) {
-	mux.HandleFunc("GET /api/v1/settings/ui", func(w http.ResponseWriter, _ *http.Request) {
-		current, err := settings.Get(context.Background())
+	mux.HandleFunc("GET /api/v1/settings/ui", func(w http.ResponseWriter, r *http.Request) {
+		current, err := settings.Get(r.Context())
 		if err != nil {
 			WriteError(w, http.StatusInternalServerError, "settings_read_failed", err.Error())
 			return

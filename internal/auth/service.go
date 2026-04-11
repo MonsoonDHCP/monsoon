@@ -2,12 +2,14 @@ package auth
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/monsoondhcp/monsoon/internal/storage"
 )
 
 type ServiceOptions struct {
+	AuthType          string
 	CookieName        string
 	SessionDuration   time.Duration
 	MaxFailedAttempts int
@@ -18,6 +20,7 @@ type Service struct {
 	store      *storage.Engine
 	sessions   *SessionManager
 	lockouts   *lockoutTracker
+	authType   string
 	cookieName string
 }
 
@@ -26,16 +29,29 @@ func NewService(store *storage.Engine, options ServiceOptions) *Service {
 	if cookieName == "" {
 		cookieName = "monsoon_session"
 	}
+	authType := strings.ToLower(strings.TrimSpace(options.AuthType))
+	if authType == "" {
+		authType = "local"
+	}
 	return &Service{
 		store:      store,
-		sessions:   NewSessionManager(options.SessionDuration),
+		sessions:   NewSessionManager(store, options.SessionDuration),
 		lockouts:   newLockoutTracker(options.MaxFailedAttempts, options.LockoutDuration),
+		authType:   authType,
 		cookieName: cookieName,
 	}
 }
 
 func (s *Service) CookieName() string {
 	return s.cookieName
+}
+
+func (s *Service) AuthType() string {
+	return s.authType
+}
+
+func (s *Service) SupportsLocalAuth() bool {
+	return strings.EqualFold(s.authType, "local")
 }
 
 func (s *Service) CreateSession(ctx context.Context, identity Identity) (string, time.Time, error) {

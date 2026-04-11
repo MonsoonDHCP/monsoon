@@ -94,6 +94,9 @@ func Validate(cfg *Config) error {
 	if cfg.Auth.Enabled && strings.TrimSpace(cfg.Auth.Type) == "" {
 		errs = append(errs, "auth.type is required when auth.enabled=true")
 	}
+	if cfg.Auth.Enabled && !strings.EqualFold(strings.TrimSpace(cfg.Auth.Type), "local") {
+		errs = append(errs, "auth.type must be local in this build")
+	}
 	if cfg.Auth.Enabled && strings.EqualFold(strings.TrimSpace(cfg.Auth.Type), "local") {
 		if cfg.Auth.Local.MaxFailedAttempts <= 0 {
 			errs = append(errs, "auth.local.max_failed_attempts must be > 0")

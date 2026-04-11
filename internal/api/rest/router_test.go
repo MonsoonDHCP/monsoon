@@ -539,6 +539,52 @@ func TestAuthLoginLocksAccountAfterRepeatedFailures(t *testing.T) {
 	}
 }
 
+func TestAuthRoutesRejectUnsupportedLocalAuthMode(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{"users", "sessions", "api_tokens", "api_tokens_by_hash"})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	authService := auth.NewService(eng, auth.ServiceOptions{
+		AuthType:        "ldap",
+		CookieName:      "monsoon_session",
+		SessionDuration: time.Hour,
+	})
+
+	mux := http.NewServeMux()
+	if err := RegisterRoutes(mux, RouterDeps{
+		AuthService:      authService,
+		AuthSecureCookie: false,
+		Version:          "test",
+		Metrics:          metrics.NewRegistry(),
+	}); err != nil {
+		t.Fatalf("register routes failed: %v", err)
+	}
+	handler := Chain(mux, AuthMiddleware(authService, true))
+
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{name: "bootstrap", path: "/api/v1/auth/bootstrap", body: `{"username":"admin","password":"secret-pass"}`},
+		{name: "login", path: "/api/v1/auth/login", body: `{"username":"admin","password":"secret-pass"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rr := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, tc.path, bytes.NewReader([]byte(tc.body)))
+			handler.ServeHTTP(rr, req)
+			if rr.Code != http.StatusNotImplemented {
+				t.Fatalf("expected unsupported auth mode to return 501, got %d body=%s", rr.Code, rr.Body.String())
+			}
+			if !strings.Contains(rr.Body.String(), "auth_mode_unsupported") {
+				t.Fatalf("expected auth_mode_unsupported response, got %s", rr.Body.String())
+			}
+		})
+	}
+}
+
 func TestRequireRoleForMutationHonorsAuthEnforcement(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/subnets", nil)
 
@@ -709,6 +755,14 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 				CreatedAt: time.Now().UTC(),
 			}}, nil
 		},
+		RestoreBackup: func(_ context.Context, req RestoreRequest) (SystemBackup, error) {
+			return SystemBackup{
+				Name:      req.Name,
+				Path:      "/tmp/" + req.Name,
+				SizeBytes: 654,
+				CreatedAt: time.Now().UTC(),
+			}, nil
+		},
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
@@ -776,6 +830,13 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 	mux.ServeHTTP(createRR, createReq)
 	if createRR.Code != http.StatusOK {
 		t.Fatalf("system backup create status mismatch: got %d body=%s", createRR.Code, createRR.Body.String())
+	}
+
+	restoreRR := httptest.NewRecorder()
+	restoreReq := httptest.NewRequest(http.MethodPost, "/api/v1/system/restore", bytes.NewReader([]byte(`{"name":"monsoon-existing.snapshot"}`)))
+	mux.ServeHTTP(restoreRR, restoreReq)
+	if restoreRR.Code != http.StatusOK {
+		t.Fatalf("system restore status mismatch: got %d body=%s", restoreRR.Code, restoreRR.Body.String())
 	}
 }
 

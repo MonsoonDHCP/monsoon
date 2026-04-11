@@ -153,3 +153,41 @@ func TestTokenLifecycle(t *testing.T) {
 		t.Fatalf("expected revoked token to fail")
 	}
 }
+
+func TestSessionsPersistAcrossServiceRestart(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeUsers, treeTokens, treeTokensByHash, treeSessions})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	svc := NewService(eng, ServiceOptions{SessionDuration: time.Hour})
+	sessionID, _, err := svc.CreateSession(context.Background(), Identity{Username: "admin", Role: DefaultRoleAdmin})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	reloaded := NewService(eng, ServiceOptions{SessionDuration: time.Hour})
+	identity, err := reloaded.ValidateSession(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("validate persisted session: %v", err)
+	}
+	if identity.Username != "admin" || identity.Role != DefaultRoleAdmin {
+		t.Fatalf("unexpected persisted identity: %+v", identity)
+	}
+}
+
+func TestServiceSupportsLocalAuthByConfiguredMode(t *testing.T) {
+	localSvc := NewService(nil, ServiceOptions{})
+	if !localSvc.SupportsLocalAuth() {
+		t.Fatalf("expected default auth type to support local auth")
+	}
+
+	ldapSvc := NewService(nil, ServiceOptions{AuthType: "ldap"})
+	if ldapSvc.SupportsLocalAuth() {
+		t.Fatalf("expected ldap auth type to disable local auth support")
+	}
+	if ldapSvc.AuthType() != "ldap" {
+		t.Fatalf("unexpected auth type: %q", ldapSvc.AuthType())
+	}
+}

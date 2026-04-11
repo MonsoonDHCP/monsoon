@@ -39,7 +39,7 @@ func NewStore(eng *storage.Engine) *EngineStore {
 	return &EngineStore{eng: eng}
 }
 
-func (s *EngineStore) Upsert(_ context.Context, lease Lease) error {
+func (s *EngineStore) Upsert(ctx context.Context, lease Lease) error {
 	if strings.TrimSpace(lease.IP) == "" {
 		return errors.New("lease.ip is required")
 	}
@@ -51,7 +51,7 @@ func (s *EngineStore) Upsert(_ context.Context, lease Lease) error {
 		return err
 	}
 
-	old, err := s.GetByIP(context.Background(), lease.IP)
+	old, err := s.GetByIP(ctx, lease.IP)
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return err
 	}
@@ -80,19 +80,19 @@ func (s *EngineStore) GetByIP(_ context.Context, ip string) (Lease, error) {
 	return l, nil
 }
 
-func (s *EngineStore) GetByMAC(_ context.Context, mac string) ([]Lease, error) {
-	return s.fetchBySecondaryPrefix(treeLeaseByMAC, []byte(normalizeMAC(mac)+indexSep))
+func (s *EngineStore) GetByMAC(ctx context.Context, mac string) ([]Lease, error) {
+	return s.fetchBySecondaryPrefix(ctx, treeLeaseByMAC, []byte(normalizeMAC(mac)+indexSep))
 }
 
-func (s *EngineStore) GetByClientID(_ context.Context, clientID []byte) ([]Lease, error) {
-	return s.fetchBySecondaryPrefix(treeLeaseByClient, []byte(string(clientID)+indexSep))
+func (s *EngineStore) GetByClientID(ctx context.Context, clientID []byte) ([]Lease, error) {
+	return s.fetchBySecondaryPrefix(ctx, treeLeaseByClient, []byte(string(clientID)+indexSep))
 }
 
-func (s *EngineStore) ListBySubnet(_ context.Context, subnetID string) ([]Lease, error) {
-	return s.fetchBySecondaryPrefix(treeLeaseBySubnet, []byte(subnetID+indexSep))
+func (s *EngineStore) ListBySubnet(ctx context.Context, subnetID string) ([]Lease, error) {
+	return s.fetchBySecondaryPrefix(ctx, treeLeaseBySubnet, []byte(subnetID+indexSep))
 }
 
-func (s *EngineStore) ListExpiringBefore(_ context.Context, t time.Time) ([]Lease, error) {
+func (s *EngineStore) ListExpiringBefore(ctx context.Context, t time.Time) ([]Lease, error) {
 	end := []byte(fmt.Sprintf("%020d", t.Unix()))
 	ips := make([]string, 0, 128)
 	err := s.eng.Iterate(treeLeaseByExpiry, nil, end, func(_, v []byte) bool {
@@ -102,11 +102,11 @@ func (s *EngineStore) ListExpiringBefore(_ context.Context, t time.Time) ([]Leas
 	if err != nil && !errors.Is(err, storage.ErrNotFound) {
 		return nil, err
 	}
-	return s.fetchByIPs(ips)
+	return s.fetchByIPs(ctx, ips)
 }
 
-func (s *EngineStore) Delete(_ context.Context, ip string) error {
-	lease, err := s.GetByIP(context.Background(), ip)
+func (s *EngineStore) Delete(ctx context.Context, ip string) error {
+	lease, err := s.GetByIP(ctx, ip)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
 			return nil
@@ -168,7 +168,7 @@ func (s *EngineStore) removeSecondaryIndexes(tx *storage.Tx, l Lease) {
 	}
 }
 
-func (s *EngineStore) fetchBySecondaryPrefix(tree string, prefix []byte) ([]Lease, error) {
+func (s *EngineStore) fetchBySecondaryPrefix(ctx context.Context, tree string, prefix []byte) ([]Lease, error) {
 	ips := make([]string, 0, 32)
 	err := s.eng.Iterate(tree, prefix, nil, func(k, v []byte) bool {
 		if len(prefix) > 0 && string(k[:min(len(k), len(prefix))]) != string(prefix) {
@@ -183,13 +183,13 @@ func (s *EngineStore) fetchBySecondaryPrefix(tree string, prefix []byte) ([]Leas
 		}
 		return nil, err
 	}
-	return s.fetchByIPs(ips)
+	return s.fetchByIPs(ctx, ips)
 }
 
-func (s *EngineStore) fetchByIPs(ips []string) ([]Lease, error) {
+func (s *EngineStore) fetchByIPs(ctx context.Context, ips []string) ([]Lease, error) {
 	out := make([]Lease, 0, len(ips))
 	for _, ip := range ips {
-		l, err := s.GetByIP(context.Background(), ip)
+		l, err := s.GetByIP(ctx, ip)
 		if err != nil {
 			if errors.Is(err, storage.ErrNotFound) {
 				continue

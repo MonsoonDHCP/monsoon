@@ -122,7 +122,7 @@ func (h *Handler) watchLeases(ctx context.Context, raw any, stream *serverStream
 				if !strings.HasPrefix(item.Type, "lease.") {
 					continue
 				}
-				if req.SubnetCIDR != "" && !leaseEventMatchesSubnet(req.SubnetCIDR, item.Data, h.deps.LeaseStore) {
+				if req.SubnetCIDR != "" && !leaseEventMatchesSubnet(ctx, req.SubnetCIDR, item.Data, h.deps.LeaseStore) {
 					continue
 				}
 				msg := leaseEventMessage{
@@ -131,7 +131,7 @@ func (h *Handler) watchLeases(ctx context.Context, raw any, stream *serverStream
 					OccurredAt: item.Timestamp.Unix(),
 				}
 				if h.deps.LeaseStore != nil && msg.IP != "" {
-					if l, err := h.deps.LeaseStore.GetByIP(context.Background(), msg.IP); err == nil {
+					if l, err := h.deps.LeaseStore.GetByIP(ctx, msg.IP); err == nil {
 						leaseMsg := newLeaseMessage(l)
 						msg.Lease = &leaseMsg
 					}
@@ -144,7 +144,7 @@ func (h *Handler) watchLeases(ctx context.Context, raw any, stream *serverStream
 	}
 }
 
-func leaseEventMatchesSubnet(target string, data map[string]any, store lease.Store) bool {
+func leaseEventMatchesSubnet(ctx context.Context, target string, data map[string]any, store lease.Store) bool {
 	if mustString(data["subnet"]) == target || mustString(data["subnet_cidr"]) == target {
 		return true
 	}
@@ -155,6 +155,6 @@ func leaseEventMatchesSubnet(target string, data map[string]any, store lease.Sto
 	if ip == "" {
 		return false
 	}
-	item, err := store.GetByIP(context.Background(), ip)
+	item, err := store.GetByIP(ctx, ip)
 	return err == nil && item.SubnetID == target
 }

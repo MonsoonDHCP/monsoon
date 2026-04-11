@@ -224,8 +224,8 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 	if e.ipamEngine != nil {
 		reservations, _ = e.ipamEngine.ListReservations(context.Background())
 	}
-	previousHosts := e.loadPreviousHosts()
 	subnets := e.resolveTargetSubnets(request.Subnets)
+	previousHosts := filterObservedHostsForSubnets(e.loadPreviousHosts(), subnets)
 	if len(result.Subnets) == 0 && len(subnets) > 0 {
 		result.Subnets = make([]string, 0, len(subnets))
 		for _, subnet := range subnets {
@@ -233,9 +233,12 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 		}
 	}
 
-	knownByIP := collectKnownHosts(leases, reservations)
+	knownByIP := filterKnownHostsForSubnets(collectKnownHosts(leases, reservations), subnets)
 	if containsMethod(e.options.Methods, "arp") {
 		for ip, mac := range readARPNeighbors() {
+			if !ipMatchesSubnets(ip, "", subnets) {
+				continue
+			}
 			item := knownByIP[ip]
 			if item.ip == "" {
 				item = knownHost{ip: ip, source: "arp"}
@@ -468,6 +471,55 @@ func collectConflictMap(leases []lease.Lease, reservations []ipam.Reservation) m
 		add(strings.TrimSpace(r.IP), strings.ToUpper(strings.TrimSpace(r.MAC)))
 	}
 	return conflicts
+}
+
+func filterKnownHostsForSubnets(known map[string]knownHost, subnets []ipam.Subnet) map[string]knownHost {
+	if len(subnets) == 0 {
+		return known
+	}
+	filtered := make(map[string]knownHost, len(known))
+	for ip, host := range known {
+		if ipMatchesSubnets(ip, host.subnet, subnets) {
+			filtered[ip] = host
+		}
+	}
+	return filtered
+}
+
+func filterObservedHostsForSubnets(hosts map[string]ObservedHost, subnets []ipam.Subnet) map[string]ObservedHost {
+	if len(subnets) == 0 {
+		return hosts
+	}
+	filtered := make(map[string]ObservedHost, len(hosts))
+	for ip, host := range hosts {
+		if ipMatchesSubnets(ip, host.Subnet, subnets) {
+			filtered[ip] = host
+		}
+	}
+	return filtered
+}
+
+func ipMatchesSubnets(ip string, subnet string, subnets []ipam.Subnet) bool {
+	if len(subnets) == 0 {
+		return true
+	}
+	candidateIP, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil {
+		candidateIP = netip.Addr{}
+	}
+	for _, item := range subnets {
+		if strings.TrimSpace(subnet) != "" && strings.EqualFold(strings.TrimSpace(subnet), item.CIDR) {
+			return true
+		}
+		prefix, err := netip.ParsePrefix(strings.TrimSpace(item.CIDR))
+		if err != nil || !candidateIP.IsValid() {
+			continue
+		}
+		if prefix.Contains(candidateIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *Engine) buildTargets(subnets []ipam.Subnet, known map[string]knownHost) []string {
@@ -736,7 +788,19 @@ func (e *Engine) persistResult(result ScanResult) error {
 	if err != nil {
 		return err
 	}
-	hostsMap := make(map[string]ObservedHost, len(result.Hosts))
+	hostsMap := map[string]ObservedHost{}
+	if len(result.Subnets) > 0 {
+		existing := e.loadPreviousHosts()
+		scopedSubnets := make([]ipam.Subnet, 0, len(result.Subnets))
+		for _, cidr := range result.Subnets {
+			scopedSubnets = append(scopedSubnets, ipam.Subnet{CIDR: cidr})
+		}
+		for ip, host := range existing {
+			if !ipMatchesSubnets(ip, host.Subnet, scopedSubnets) {
+				hostsMap[ip] = host
+			}
+		}
+	}
 	for _, host := range result.Hosts {
 		hostsMap[host.IP] = host
 	}

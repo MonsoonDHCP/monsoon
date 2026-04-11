@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -164,6 +163,7 @@ func run() int {
 		"audit",
 		"settings",
 		"users",
+		"sessions",
 		"api_tokens",
 		"api_tokens_by_hash",
 		"discovery_scans",
@@ -180,19 +180,9 @@ func run() int {
 	}()
 
 	if restoreFrom != "" {
-		trees, err := storage.ReadSnapshot(restoreFrom)
-		if err != nil {
+		if err := restoreSnapshotIntoEngine(eng, restoreFrom); err != nil {
 			log.Printf("restore failed: %v", err)
 			return 1
-		}
-		for name, tree := range trees {
-			it := storage.NewIterator(tree, nil, nil, false)
-			for it.Next() {
-				if err := eng.Put(name, it.Key(), it.Value()); err != nil {
-					log.Printf("restore apply failed (%s): %v", name, err)
-					return 1
-				}
-			}
 		}
 		fmt.Printf("snapshot restored from %s\n", restoreFrom)
 		return 0
@@ -262,6 +252,7 @@ func run() int {
 	)
 	auditLogger := audit.NewLogger(eng)
 	authService := auth.NewService(eng, auth.ServiceOptions{
+		AuthType:          cfg.Auth.Type,
 		CookieName:        cfg.Auth.Session.CookieName,
 		SessionDuration:   cfg.Auth.Session.Duration.Duration,
 		MaxFailedAttempts: cfg.Auth.Local.MaxFailedAttempts,
@@ -479,13 +470,8 @@ func run() int {
 		},
 		UpdateConfig: func(_ context.Context, payload map[string]any) (any, error) {
 			beforeReload := applyRuntimeOverrides(cfgManager.Get(), dataDirFlag, debug)
-			raw, err := json.Marshal(payload)
+			next, err := mergeConfigPayload(cfgManager.Get(), payload)
 			if err != nil {
-				return nil, err
-			}
-
-			next := config.DefaultConfig()
-			if err := json.Unmarshal(raw, next); err != nil {
 				return nil, err
 			}
 			if err := config.Validate(next); err != nil {
@@ -590,6 +576,13 @@ func run() int {
 				return out[i].CreatedAt.After(out[j].CreatedAt)
 			})
 			return out, nil
+		},
+		RestoreBackup: func(ctx context.Context, req rest.RestoreRequest) (rest.SystemBackup, error) {
+			snapshot := cfgManager.Get()
+			if dataDirFlag != "" {
+				snapshot.Server.DataDir = dataDirFlag
+			}
+			return restoreBackupFromRequest(ctx, eng, snapshot, dataDirFlag, req)
 		},
 		DHCPv4Running: func() bool {
 			if dhcpServer != nil {

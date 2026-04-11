@@ -1,819 +1,844 @@
-# Project Analysis Report
+﻿# Project Analysis Report
 
 > Auto-generated comprehensive analysis of MonsoonDHCP
 > Generated: 2026-04-11
-> Analyzer: Codex (GPT-5) - Full Codebase Audit
+> Analyzer: Codex - Full Codebase Audit
 
 ## 1. Executive Summary
 
-Monsoon is a single-binary Go application that combines DHCPv4, DHCPv6, IPAM, discovery, audit logging, webhooks, a web dashboard, and three API surfaces (REST, gRPC-over-HTTP/2, and MCP over JSON-RPC/SSE). The intended audience is an operator who wants an all-in-one DHCP plus IPAM control plane without an external database. The actual implementation is a modular monolith with a relatively small dependency footprint and a surprisingly broad feature set for the project size, but it is materially less complete and less hardened than the README and specification claim.
+MonsoonDHCP is a single-binary DHCP/IPAM platform implemented as a modular monolith in Go with an embedded React dashboard. The codebase aims to combine DHCPv4, DHCPv6, IP address management, discovery, high availability, migrations from legacy systems, multiple API surfaces, and an embedded admin UI into one deployable service. The product direction is ambitious and the current implementation has real functional breadth, but the code is materially narrower than the README and planning documents claim.
 
 Key measured metrics:
 
 | Metric | Value |
-|---|---:|
-| Total files in repo | 6009 |
-| Go files | 108 |
-| Go LOC | 19732 |
-| Frontend source files | 32 |
-| Frontend source LOC | 3302 |
-| Test files | 21 |
-| Test functions | 38 |
-| REST routes implemented | 45 |
-| gRPC methods implemented | 18 |
-| MCP tools implemented | 15 |
-| Go direct dependencies | 1 |
-| Go indirect dependencies | 1 |
-| Frontend runtime dependencies | 15 |
-| Frontend dev dependencies | 9 |
+|---|---|
+| Total files (excluding `.git`, `node_modules`, `vendor`, `dist`, `build`) | 226 |
+| Go files | 137 |
+| Non-test Go files | 91 |
+| Go LOC | 24,956 |
+| Frontend source files (`web/src`) | 36 |
+| Frontend LOC (`web/src`) | 3,485 |
+| Go test files | 46 |
+| Frontend test files | 3 |
+| Total test files | 49 |
+| Explicit Go dependencies in `go.mod` | 2 |
+| Resolved external Go modules (`go list -m all`) | 6 |
+| Frontend direct dependencies | 15 |
+| Frontend dev dependencies | 13 |
+| Total REST/WS routes | 45 |
+| gRPC RPC methods | 11 |
+| MCP tools | 15 |
 
-Overall health assessment: **5.5/10**
+Overall health assessment: **6/10**. The project builds, tests, and ships a usable core, but it is not architecturally honest relative to its own documentation, and several subsystems are still more aspirational than production-grade. The strongest areas are DHCP protocol handling, general code organization, and baseline delivery hygiene. The biggest concerns are spec drift, over-promised architecture, and operational gaps around persistence, HA, and truthful observability.
 
-Justification:
-- Buildability is good: `go build ./cmd/monsoon`, `go vet ./...`, `go test ./... -count=1`, and `npm run build` all passed locally.
-- The implementation surface is real, not vaporware: DHCPv4, DHCPv6, auth, audit, REST, gRPC, MCP, websocket fanout, HA heartbeat/sync, and migration tooling all exist.
-- Production hardening is not there yet. The most serious issue is authorization logic that quietly allows mutations when identity is missing in REST, gRPC, and MCP (`internal/api/rest/router.go:943`, `internal/api/grpc/server.go:283`, `internal/api/mcp/handlers.go:792`).
-- Documentation and specification drift is large. The project documents promise VLAN CRUD, DDNS, LDAP auth, TLS, Prometheus, true load-sharing HA, and more. Several of those are absent or only partially represented.
+Top strengths:
 
-Top 3 strengths:
-- Very small Go dependency surface. Core functionality is implemented mostly with stdlib plus YAML parsing and `x/crypto`.
-- Clear modular decomposition under `internal/` with distinct packages for DHCP, IPAM, discovery, auth, HA, migration, webhook, and API layers.
-- Good local test signal in the packages that do have tests. Fifteen tested packages reported an average of 56.6% statement coverage during `go test -cover` before the run hit a local Go toolchain mismatch.
+- The repository is buildable and testable today: `go build ./cmd/monsoon`, `go vet ./...`, `go test ./... -count=1`, `staticcheck ./...`, `govulncheck ./...`, `npm test`, and `npm run build` all passed.
+- The codebase is organized into clear internal packages with generally good cohesion and broad functional coverage for a relatively small team.
+- Security posture improved meaningfully in the latest commits: auth middleware, CSRF, CORS guardrails, rate limiting, secure headers, token hashing, and optional TLS are all present.
 
-Top 3 concerns:
-- Authorization bypass risk across three API surfaces because missing identity is treated as allowed instead of denied.
-- The implementation diverges substantially from the stated architecture, especially storage, discovery, observability, and security.
-- No CI, no frontend tests, no full-project successful coverage run, no TLS, and an insecure example config (`configs/monsoon.yaml:64-70`).
+Top concerns:
+
+- The documentation and specification substantially overstate what the code actually does.
+- The storage engine is described as a custom embedded B+Tree/page system, but the active implementation is effectively an in-memory sorted map with WAL and snapshot support.
+- Several "enterprise" features are only partially implemented or placeholder-grade: discovery, LDAP auth, true HA, and shared auth/session behavior across peers.
 
 ## 2. Architecture Analysis
 
 ### 2.1 High-Level Architecture
 
-Overall architecture: **modular monolith**
+The project is a **single-process modular monolith**:
 
-This is one Go process that owns:
-- DHCPv4 server
-- DHCPv6 server
-- REST API
-- gRPC API
-- MCP API
-- embedded dashboard serving
-- discovery engine
-- audit logging
-- auth/session/token management
-- HA heartbeat and lease sync
-- webhook delivery
-- storage engine
+- `cmd/monsoon` wires together configuration, storage, DHCP servers, APIs, dashboard, discovery, HA, backup, metrics, and shutdown orchestration.
+- `internal/*` contains all application logic; there is no `pkg/` directory and no attempt to expose public reusable libraries.
+- The dashboard is a React/Vite frontend built under `web/` and embedded into the Go binary through `internal/dashboard`.
+- Persistent state is stored under the configured data directory using a custom engine with snapshots and WAL segments.
 
 Text data flow:
 
-1. Client traffic enters via DHCP, REST, gRPC, MCP, or websocket/SSE.
-2. Transport handlers call domain packages: `lease`, `ipam`, `discovery`, `auth`, `audit`, `ha`, `settings`.
-3. Domain packages persist to `internal/storage`.
-4. `events.Broker` fans domain events to websocket, SSE, HA sync, and webhook delivery.
-5. The frontend polls REST endpoints every 15s and also listens to websocket or SSE updates.
+```text
+Config YAML + env
+  -> cmd/monsoon bootstrap
+  -> storage engine open
+  -> auth/session/token stores
+  -> IPAM engine + lease store + discovery + HA + webhooks
+  -> transport layer
+     -> DHCPv4 UDP server
+     -> DHCPv6 UDP server
+     -> REST API
+     -> gRPC-over-HTTP/2 handler
+     -> MCP SSE/POST server
+     -> WebSocket + SSE event stream
+  -> React dashboard consumes REST + WS/SSE
+```
 
 Component interaction map:
 
-```text
-DHCPv4/DHCPv6 handlers
-    -> lease.Store
-    -> ipam.Engine
-    -> events.Broker
-    -> audit.Logger
-
-REST/gRPC/MCP
-    -> auth.Service
-    -> lease.Store
-    -> ipam.Engine
-    -> discovery.Engine
-    -> audit.Logger
-    -> settings.UIStore
-    -> backup/config helpers
-
-events.Broker
-    -> websocket.Hub
-    -> REST SSE endpoint
-    -> webhook.Dispatcher
-    -> HA lease sync
-
-storage.Engine
-    -> WAL
-    -> snapshot store
-    -> in-memory tree objects
-```
+- DHCP servers allocate/update leases through `internal/lease` and consult subnet/pool state from `internal/ipam`.
+- REST, gRPC, and MCP all sit on the same stores and engines rather than separate service layers.
+- `internal/events` is the real-time backbone for WebSocket and SSE updates.
+- `internal/discovery` writes scan results to storage and emits events.
+- `internal/ha` replicates some lease changes and heartbeat state over a custom TCP protocol.
+- `internal/webhook` consumes events asynchronously and posts outbound notifications.
 
 Concurrency model:
-- `cmd/monsoon/main.go` starts long-lived goroutines for DHCPv4, DHCPv6, REST, gRPC, MCP, websocket hub, webhook dispatcher, HA manager, and lease sweeper.
-- Discovery scans run asynchronously and persist progress/results.
-- Websocket clients get their own reader/writer loops (`internal/api/websocket/client.go`).
-- HA heartbeat and sync run concurrently.
-- Shutdown is centrally coordinated with context cancellation and `http.Server.Shutdown`.
 
-Assessment:
-- The orchestration path in `cmd/monsoon/main.go` is competent and fairly complete.
-- Goroutine ownership is understandable.
-- This is not microservices and should not be presented that way.
+- Main process starts multiple long-lived goroutines: DHCP listeners, discovery scheduler, lease sweeper, webhook dispatcher, HA heartbeat/sync loops, REST/gRPC/MCP listeners, WebSocket hub, and session cleanup.
+- Concurrency is mostly controlled via contexts, `sync.Mutex`/`sync.RWMutex`, channels, and `http.Server` shutdown hooks.
+- Goroutine management is acceptable overall, but some subsystems remain fragile because they are hand-rolled and only lightly isolated from each other.
+
+Important observation: the orchestration code in `cmd/monsoon/main.go` is competent, but it is carrying a lot of system-wide responsibility. This keeps the architecture simple to deploy, but it also makes "one process does everything" the core scaling and fault-isolation constraint.
 
 ### 2.2 Package Structure Assessment
 
-Go package inventory and responsibilities:
+Go packages and responsibilities:
 
 | Package | Responsibility | Assessment |
 |---|---|---|
-| `cmd/monsoon` | Process bootstrap, CLI flags, lifecycle wiring | Large but understandable orchestrator |
-| `internal/api/grpc` | Custom gRPC-over-HTTP/2 implementation, message types, services | Clever but high-complexity, hand-rolled transport |
-| `internal/api/mcp` | JSON-RPC/SSE MCP server and tool handlers | Reasonably cohesive |
-| `internal/api/rest` | REST routes, auth endpoints, middleware, dashboard serving | Functionally broad, router file is too large |
-| `internal/api/websocket` | Custom websocket upgrade, client handling, event normalization/hub | Works, but hand-rolled protocol path adds risk |
-| `internal/audit` | Audit log persistence and query | Cohesive |
-| `internal/auth` | Local auth, tokens, sessions, RBAC helpers | Cohesive, but LDAP missing |
-| `internal/config` | Schema, defaults, env overrides, validation, reload | Strong central config package |
-| `internal/dashboard` | Embedded dashboard FS exposure | Minimal |
-| `internal/dhcpv4` | DHCPv4 packet, options, pool, handler, server | Cohesive core protocol package |
-| `internal/dhcpv6` | DHCPv6 packet, options, DUID, PD, handler, server | Cohesive, narrower than spec |
-| `internal/discovery` | Discovery orchestration and host/conflict persistence | Cohesive but implementation scope is reduced |
-| `internal/events` | Internal event broker | Minimal and cohesive |
-| `internal/ha` | Heartbeat, election, sync, witness fencing, status | Cohesive, partial feature set |
-| `internal/ipam` | Subnets, reservations, address synthesis, summaries | Cohesive but missing VLAN domain |
-| `internal/lease` | Lease model, state transitions, indexes, sweeper | Strong cohesion |
-| `internal/metrics` | Text metrics registry/export | Cohesive but not Prometheus-grade |
-| `internal/migrate` | Importers for CSV, ISC DHCP, Kea, NetBox, phpIPAM | Broad but still coherent |
-| `internal/settings` | UI settings persistence | Minimal |
-| `internal/storage` | Engine, WAL, snapshot, pseudo-tree, codec/page manager | Biggest architectural gap vs spec |
-| `internal/webhook` | Event dispatch and HTTP delivery | Cohesive |
+| `cmd/monsoon` | bootstrap, config load, runtime wiring, lifecycle | Large but coherent composition root |
+| `internal/api/grpc` | custom gRPC-over-HTTP/2 transport and handlers | Cohesive, but protocol choice is risky |
+| `internal/api/mcp` | MCP JSON-RPC tools and SSE transport | Cohesive, unusual surface area |
+| `internal/api/rest` | REST router, auth routes, dashboard serving, middleware | Large package, borderline oversized |
+| `internal/api/websocket` | WebSocket handshake, client, hub | Cohesive, hand-rolled complexity |
+| `internal/audit` | audit event model and store access | Small and focused |
+| `internal/auth` | local auth, sessions, tokens, identity model | Focused, but LDAP is missing |
+| `internal/config` | config schema, defaults, env overrides, validation | Strong package |
+| `internal/dashboard` | embedded dashboard assets | Minimal and clean |
+| `internal/dhcpv4` | DHCPv4 server, packet handling, options, pools | Strongest domain package |
+| `internal/dhcpv6` | DHCPv6 server, options, DUID, relay, pools | Strong domain package |
+| `internal/discovery` | network scanning, persistence, conflict detection | Coherent but oversold |
+| `internal/events` | publish/subscribe event fanout | Small and clean |
+| `internal/ha` | heartbeat, election, sync, witness logic | Coherent but not production-hardened |
+| `internal/ipam` | subnets, addresses, reservations, summaries | Important package, simplified model |
+| `internal/lease` | lease store, state transitions, expiry sweeper | Strong package |
+| `internal/metrics` | custom Prometheus-style registry | Small and focused |
+| `internal/migrate` | CSV, ISC DHCP, Kea, NetBox, phpIPAM importers | Large but sensible grouping |
+| `internal/settings` | UI settings persistence | Small and focused |
+| `internal/storage` | engine, WAL, snapshot, iterator, codec, "btree" | Biggest architecture/documentation mismatch |
+| `internal/webhook` | async webhook delivery and dispatcher | Focused, light implementation |
 
 Package cohesion:
-- Mostly good. The main cohesion problem is file size rather than package boundary.
-- `internal/api/rest/router.go` is carrying too many handlers in one file.
-- `web/src/hooks/use-dashboard-data.ts` plays the role of a front-end god object.
 
-Circular dependency risk:
-- No direct cycles observed.
-- API packages properly depend inward on domain/storage packages.
+- Most packages have a single responsibility and read as intentionally separated modules.
+- `internal/api/rest` and `cmd/monsoon` are the only packages pushing beyond comfortable size.
+- There is no obvious circular dependency problem. The project relies on "composition at the top" rather than tangled package graphs.
 
-Internal vs `pkg/` separation:
-- Good. No `pkg/` package exists; everything application-specific lives under `internal/`.
-- That matches the codebase reality because this is an app, not a reusable SDK.
+Internal vs public separation:
+
+- The project uses `internal/` correctly. Nothing in this repository looks designed as a consumable library.
+- The absence of `pkg/` is a good decision here.
+
+Risk areas:
+
+- Transport packages duplicate some authorization and shape-mapping logic.
+- The custom transport stack means correctness depends on internal consistency, not on battle-tested external libraries.
 
 ### 2.3 Dependency Analysis
 
 #### Go dependencies
 
-Direct and indirect dependencies from `go.mod`:
+Explicit `go.mod` dependencies:
 
-| Dependency | Version | Purpose | Maintenance status | Replaceable with stdlib? |
-|---|---|---|---|---|
-| `gopkg.in/yaml.v3` | `v3.0.1` | Config parsing and YAML export | Mature and widely used | No practical stdlib substitute |
-| `golang.org/x/crypto` | `v0.50.0` | bcrypt password hashing | Mature official Go subrepo | Not for bcrypt |
+| Module | Version | Purpose | Assessment |
+|---|---|---|---|
+| `gopkg.in/yaml.v3` | `v3.0.1` | config parsing and export | Reasonable; standard choice |
+| `golang.org/x/crypto` | `v0.50.0` | bcrypt password hashing | Appropriate and necessary |
 
-Dependency hygiene:
-- Excellent dependency count discipline on the Go side.
-- No obvious unused module entries in `go.mod`.
-- `staticcheck ./...` did find unused functions:
-  - `internal/api/grpc/messages.go:785`
-  - `internal/api/mcp/handlers.go:124`
-  - `internal/api/rest/auth.go:237`
-  - `internal/dhcpv6/packet.go:109`
-  - `internal/dhcpv6/packet.go:115`
-- No CVE scan was performed in this audit, so vulnerability status remains unverified.
+Resolved external modules from `go list -m all`:
 
-Important architectural note:
-- The tiny dependency surface is a strength.
-- The downside is that several complex things are reimplemented manually: websocket framing, gRPC framing, metrics exposition, storage, and HA protocol. That lowers third-party risk but raises maintenance and correctness risk.
+| Module | Version | Update signal | Notes |
+|---|---|---|---|
+| `golang.org/x/crypto` | `v0.50.0` | no newer version reported by `go list -m -u all` | Used for bcrypt |
+| `golang.org/x/net` | `v0.52.0` | `v0.53.0` available | Likely transitive |
+| `golang.org/x/sys` | `v0.43.0` | no newer version reported | Transitive |
+| `golang.org/x/term` | `v0.42.0` | no newer version reported | Transitive |
+| `golang.org/x/text` | `v0.36.0` | no newer version reported | Transitive |
+| `gopkg.in/check.v1` | `v0.0.0-20161208181325-20d25e280405` | newer `v1.0.0-20201130134442-10cb98267c6c` available | Test-only transitive dependency |
+
+Dependency hygiene assessment:
+
+- Go dependency surface is intentionally small. That is a strength.
+- `govulncheck ./...` reported **No vulnerabilities found**.
+- `go vet ./...` and `staticcheck ./...` were clean.
+- The dependency minimalism is partly achieved by reimplementing major protocol machinery in-house. That reduces vendor risk but increases maintenance risk.
+
+Could some dependencies be replaced with stdlib?
+
+- `yaml.v3` cannot realistically be replaced with stdlib because the standard library does not provide YAML support.
+- `x/crypto` should not be replaced.
+- The more important design point is not dependency reduction; it is whether the project should depend more, not less, on proven libraries for gRPC, WebSocket, metrics, and storage.
 
 #### Frontend dependencies
 
-Runtime dependencies from `web/package.json`:
+Production dependencies (`15` total):
 
-| Dependency | Version | Purpose | Notes |
-|---|---|---|---|
-| `react` / `react-dom` | `19.2.5` | SPA runtime | Modern choice |
-| `react-router-dom` | `7.9.4` | Routing | Fine |
-| `next-themes` | `0.4.6` | Theme switching | Fine |
-| `lucide-react` | `0.554.0` | Icons | Fine |
-| `clsx`, `tailwind-merge`, `class-variance-authority` | various | Utility styling helpers | Standard |
-| Radix UI packages (`avatar`, `dialog`, `dropdown-menu`, `separator`, `tabs`, `tooltip`) | various | Accessible primitives | Good primitives, bundle cost |
+- `react`, `react-dom`, `react-router-dom`
+- Radix UI primitives: `@radix-ui/react-avatar`, `@radix-ui/react-dialog`, `@radix-ui/react-dropdown-menu`, `@radix-ui/react-separator`, `@radix-ui/react-slot`, `@radix-ui/react-tabs`, `@radix-ui/react-tooltip`
+- UI helpers: `class-variance-authority`, `clsx`, `lucide-react`, `next-themes`, `tailwind-merge`
 
-Dev/build dependencies:
-- Vite 7.3.2
-- TypeScript 6.0.2
-- Tailwind 4.1.18
-- `@vitejs/plugin-react-swc`
+Development dependencies (`13` total):
+
+- `vite`, `vitest`, `typescript`, `jsdom`
+- `@vitejs/plugin-react-swc`, `@tailwindcss/vite`, `tailwindcss`, `tw-animate-css`
+- `@testing-library/jest-dom`, `@testing-library/react`
+- Type packages for node/react/react-dom
 
 Frontend dependency assessment:
-- Reasonable modern stack.
-- The final JS bundle is not tiny for the feature scope: `438027` bytes before gzip, `135.02 kB` gzip.
-- No frontend test dependencies are present.
+
+- The stack is modern and reasonable: React 19, Vite 7, TypeScript 6, Tailwind 4, Vitest.
+- `npm audit --omit=dev` reported **0 vulnerabilities**.
+- `npm outdated --json` shows several packages behind latest, including Vite 8, Vitest 4, Tailwind 4.2.x, and a few Radix/testing packages.
+- The frontend dependency graph is normal for a React admin UI and not a major risk by itself.
 
 ### 2.4 API & Interface Design
 
-#### REST endpoint inventory
+#### REST/HTTP inventory
 
-Implemented REST routes:
+Implemented REST and adjacent HTTP routes in `internal/api/rest/router.go` and `internal/api/rest/auth.go`:
 
-| Method | Path |
-|---|---|
-| GET | `/api/v1/system/health` |
-| GET | `/api/v1/system/info` |
-| GET | `/api/v1/system/config` |
-| PUT | `/api/v1/system/config` |
-| GET | `/api/v1/system/config/export` |
-| GET | `/api/v1/system/backups` |
-| POST | `/api/v1/system/backup` |
-| GET | `/api/v1/ha/status` |
-| POST | `/api/v1/ha/failover` |
-| GET | `/api/v1/leases` |
-| GET | `/api/v1/leases/{ip}` |
-| POST | `/api/v1/leases/{ip}/release` |
-| POST | `/api/v1/leases/{ip}/reservation` |
-| GET | `/api/v1/subnets` |
-| GET | `/api/v1/subnets/raw` |
-| POST | `/api/v1/subnets` |
-| PUT | `/api/v1/subnets` |
-| DELETE | `/api/v1/subnets` |
-| GET | `/api/v1/reservations` |
-| GET | `/api/v1/reservations/{mac}` |
-| POST | `/api/v1/reservations` |
-| PUT | `/api/v1/reservations` |
-| DELETE | `/api/v1/reservations` |
-| GET | `/api/v1/addresses` |
-| GET | `/api/v1/addresses/{ip}` |
-| GET | `/api/v1/audit` |
-| GET | `/api/v1/discovery/status` |
-| GET | `/api/v1/discovery/progress` |
-| POST | `/api/v1/discovery/scan` |
-| GET | `/api/v1/discovery/results` |
-| GET | `/api/v1/discovery/results/{id}` |
-| GET | `/api/v1/discovery/conflicts` |
-| GET | `/api/v1/discovery/rogue` |
-| GET | `/api/v1/settings/ui` |
-| PUT | `/api/v1/settings/ui` |
-| GET | `/api/v1/events` |
-| POST | `/api/v1/auth/bootstrap` |
-| POST | `/api/v1/auth/login` |
-| POST | `/api/v1/auth/logout` |
-| GET | `/api/v1/auth/me` |
-| POST | `/api/v1/auth/password` |
-| GET | `/api/v1/auth/tokens` |
-| POST | `/api/v1/auth/tokens` |
-| DELETE | `/api/v1/auth/tokens/{id}` |
+| Method | Path | Area |
+|---|---|---|
+| `GET` | `/api/v1/system/health` | health |
+| `GET` | `/api/v1/system/ready` | readiness |
+| `GET` | `/api/v1/system/info` | system |
+| `GET` | `/api/v1/system/config` | config |
+| `PUT` | `/api/v1/system/config` | config |
+| `GET` | `/api/v1/system/config/export` | config export |
+| `GET` | `/api/v1/system/backups` | backup |
+| `POST` | `/api/v1/system/backup` | backup |
+| `GET` | `/api/v1/ha/status` | HA |
+| `POST` | `/api/v1/ha/failover` | HA |
+| `GET` | `/api/v1/leases` | leases |
+| `GET` | `/api/v1/leases/{ip}` | leases |
+| `POST` | `/api/v1/leases/{ip}/release` | leases |
+| `POST` | `/api/v1/leases/{ip}/reservation` | leases |
+| `GET` | `/api/v1/subnets` | IPAM |
+| `GET` | `/api/v1/subnets/raw` | IPAM |
+| `POST` | `/api/v1/subnets` | IPAM |
+| `PUT` | `/api/v1/subnets` | IPAM |
+| `DELETE` | `/api/v1/subnets?cidr=` | IPAM |
+| `GET` | `/api/v1/reservations` | IPAM |
+| `GET` | `/api/v1/reservations/{mac}` | IPAM |
+| `POST` | `/api/v1/reservations` | IPAM |
+| `PUT` | `/api/v1/reservations` | IPAM |
+| `DELETE` | `/api/v1/reservations?mac=` | IPAM |
+| `GET` | `/api/v1/addresses` | IPAM |
+| `GET` | `/api/v1/addresses/{ip}` | IPAM |
+| `GET` | `/api/v1/audit` | audit |
+| `GET` | `/api/v1/discovery/status` | discovery |
+| `GET` | `/api/v1/discovery/progress` | discovery |
+| `POST` | `/api/v1/discovery/scan` | discovery |
+| `GET` | `/api/v1/discovery/results` | discovery |
+| `GET` | `/api/v1/discovery/results/{id}` | discovery |
+| `GET` | `/api/v1/discovery/conflicts` | discovery |
+| `GET` | `/api/v1/discovery/rogue` | discovery |
+| `GET` | `/api/v1/settings/ui` | settings |
+| `PUT` | `/api/v1/settings/ui` | settings |
+| `GET` | `/api/v1/events` | SSE |
+| `POST` | `/api/v1/auth/bootstrap` | auth |
+| `POST` | `/api/v1/auth/login` | auth |
+| `POST` | `/api/v1/auth/logout` | auth |
+| `GET` | `/api/v1/auth/me` | auth |
+| `POST` | `/api/v1/auth/password` | auth |
+| `GET` | `/api/v1/auth/tokens` | auth |
+| `POST` | `/api/v1/auth/tokens` | auth |
+| `DELETE` | `/api/v1/auth/tokens/{id}` | auth |
+| `GET` | `/ws` | WebSocket |
 
-What is notably absent relative to README/spec:
-- VLAN endpoints
-- address create/update/release/history endpoints
-- `/system/metrics`
-- TLS endpoints/config
-- richer subnet detail/search/split/merge endpoints
+Missing relative to README/spec:
+
+- No VLAN CRUD REST surface
+- No `POST/PUT/DELETE /api/v1/addresses`
+- No address history endpoint
+- No resource-style restore workflow beyond snapshot restore by name/path
+- No resource-style `/subnets/{id}` family
+- No `/utilization`, `/next-available`, `/split`, `/scan` subnet endpoints
+- No `/leases/stats` or `/leases/expiring`
 
 #### gRPC inventory
 
-Implemented methods:
+Implemented RPC areas in `internal/api/grpc`:
 
-| Service | Methods |
-|---|---|
-| `SubnetService` | `ListSubnets`, `CreateSubnet`, `GetSubnet`, `UpdateSubnet`, `DeleteSubnet`, `GetSubnetUtilization` |
-| `AddressService` | `SearchAddresses`, `GetAddress`, `ReserveAddress`, `ReleaseAddress`, `NextAvailable` |
-| `LeaseService` | `ListLeases`, `GetLease`, `ReleaseLease`, `WatchLeases` |
-| `DiscoveryService` | `TriggerScan`, `GetConflicts`, `WatchDiscovery` |
+- Subnet: list, create, get, update, delete, utilization
+- Lease: list, get, release, watch
+- Address: search, get, reserve, release, next available
+- Discovery: trigger scan, get conflicts, watch
+- System: health, readiness
 
 Assessment:
-- Good surface area.
-- This is entirely hand-built, so transport correctness and long-term maintainability will be harder than using generated protobuf stubs.
+
+- Broad enough to be useful.
+- This is **not** the standard `google.golang.org/grpc` server stack. It is a custom gRPC-like transport over HTTP/2 with custom frame and protobuf handling. That is a material maintenance risk and a compatibility risk.
 
 #### MCP inventory
 
-Implemented tools:
-- `monsoon_list_subnets`
-- `monsoon_get_subnet`
-- `monsoon_create_subnet`
-- `monsoon_find_available_ip`
-- `monsoon_reserve_ip`
-- `monsoon_list_leases`
-- `monsoon_get_lease`
-- `monsoon_search_by_mac`
-- `monsoon_search_by_hostname`
-- `monsoon_subnet_utilization`
-- `monsoon_run_discovery`
-- `monsoon_get_conflicts`
-- `monsoon_audit_query`
-- `monsoon_get_health`
-- `monsoon_plan_subnet`
+Implemented MCP tools in `internal/api/mcp/tools.go` and handlers:
+
+- `list_subnets`
+- `get_subnet`
+- `create_subnet`
+- `find_available_ip`
+- `reserve_ip`
+- `list_leases`
+- `get_lease`
+- `search_by_mac`
+- `search_by_hostname`
+- `subnet_utilization`
+- `run_discovery`
+- `get_conflicts`
+- `audit_query`
+- `get_health`
+- `plan_subnet`
 
 Assessment:
-- The MCP surface is one of the more complete advanced features.
+
+- This is a notable scope expansion beyond traditional DHCP/IPAM products.
+- Tool design is coherent, but it adds another operational surface to secure and test.
 
 #### API consistency assessment
 
 Strengths:
-- REST uses a consistent `{data, meta, error}` envelope.
-- Route naming is mostly coherent.
-- gRPC/MCP capabilities map reasonably to existing domain actions.
+
+- JSON responses are broadly consistent in style.
+- Authorization checks on mutation paths are present across REST, gRPC, and MCP when auth is enabled.
+- Security middleware coverage on REST is substantially better than many early-stage projects.
 
 Weaknesses:
-- Auth/authorization semantics are inconsistent and unsafe.
-- The documented API surface is much larger than the implemented one.
-- Websocket auth/origin handling is effectively absent at upgrade time.
 
-Authentication/authorization model:
-- Local username/password auth is implemented.
-- Bearer token auth is implemented.
-- Session auth is implemented, but sessions are in-memory only.
-- LDAP is not implemented.
-- Role model is simple (`admin`, `operator`, `viewer`), but enforcement is flawed:
-  - REST mutation helper returns allow on missing identity (`internal/api/rest/router.go:943-947`)
-  - gRPC `authorize` returns `nil` when identity is missing (`internal/api/grpc/server.go:283-292`)
-  - MCP `requireRole` returns `nil` when identity is missing (`internal/api/mcp/handlers.go:792-800`)
+- REST naming is inconsistent with the documentation and partially inconsistent with REST conventions.
+- Some endpoints mutate by query string rather than path resource identity.
+- The config update endpoint now behaves like merge-on-write rather than destructive full document replacement, but it still lacks field-mask or PATCH semantics.
+- Subsystem behavior differs across transports. For example, MCP computes subnet utilization differently than the REST/IPAM summary path.
 
-Rate limiting, CORS, and input validation:
-- REST rate limiting exists and is a simple per-IP token bucket (`internal/api/rest/middleware.go:95-141`).
-- There is no equivalent rate limiting on gRPC, MCP, websocket, or DHCP request paths.
-- Default CORS is permissive: `CORSOrigins: []string{"*"}` (`internal/config/config.go:290`) and sample config uses `cors_origins: ["*"]` (`configs/monsoon.yaml:44`).
-- CORS middleware reflects any origin when wildcard is configured (`internal/api/rest/middleware.go:67-90`).
-- Input validation is decent in config and IPAM domain code, but the frontend mostly relies on backend validation.
+Authentication and authorization model:
+
+- Local username/password auth using bcrypt hashes.
+- Session cookie auth plus API tokens.
+- Roles include at least `admin`, `operator`, and viewer-style identities.
+- Mutation enforcement logic is correct when auth is enabled. Earlier generated audit docs in the repo incorrectly described this as fail-open; current code does not support that claim.
+- LDAP configuration exists in config, but there is no actual LDAP authentication implementation.
+
+Rate limiting, CORS, and validation:
+
+- REST middleware chain includes request ID, proxy handling, recovery, security headers, CORS, CSRF, auth rate limiting, general rate limiting, auth, and logging.
+- Config validation blocks wildcard CORS when auth is enabled.
+- Input validation exists for subnets, reservations, config, and many route parameters, but enforcement depth varies by subsystem.
 
 ## 3. Code Quality Assessment
 
 ### 3.1 Go Code Quality
 
+Measured state:
+
+- `go vet ./...` passed
+- `staticcheck ./...` passed
+- `govulncheck ./...` passed with "No vulnerabilities found"
+- No `TODO`, `FIXME`, `HACK`, or `XXX` markers were found in source after excluding generated and dependency directories
+
 Code style consistency:
-- Style is generally consistent and appears gofmt-compliant.
-- Naming is mostly conventional.
+
+- Formatting and naming are generally clean and Go-idiomatic.
+- Package boundaries are mostly sensible.
+- The code reads like one primary author with consistent habits, which helps maintain coherence.
 
 Error handling:
-- Better than average for an early-stage project.
-- Many handlers return explicit JSON errors rather than panicking.
-- Recovery middleware exists.
-- Error wrapping is mixed. Some paths return rich `fmt.Errorf`, others lose context.
 
-Context usage:
-- Good in server startup/shutdown, storage calls, and handler boundaries.
-- Some lower-level operations do not meaningfully use cancellation once started.
+- Errors are usually checked and returned cleanly.
+- Wrapping is inconsistent. Some packages use contextual errors well; others return plain errors or HTTP messages without a richer error taxonomy.
+- There is no project-wide structured error type system.
 
-Logging approach:
-- Not structured.
-- Uses `log.Printf` directly, for example request logging in `internal/api/rest/middleware.go:60`.
-- This contradicts README/spec claims of structured JSON logging.
+Context propagation:
+
+- Startup and server lifecycle code uses context appropriately.
+- There are several places where request-scoped work falls back to `context.Background()` inside handlers or stores. That weakens cancellation and timeout propagation.
+- This is not catastrophic, but it is a quality and operations smell.
+
+Logging:
+
+- Logging is mostly `log.Printf`-style with message formatting, not a true structured logger.
+- Config exposes `log_format: json`, but the implementation does not fully behave like a mature structured logging stack.
+- Request IDs exist in middleware, but logs are not consistently correlated or machine-friendly.
 
 Configuration management:
-- One of the better parts of the codebase.
-- Central config schema in `internal/config/config.go`.
-- Defaults, env overrides, validation, and reload support all exist.
-- The runtime config update path in `cmd/monsoon/main.go` is powerful but dangerous because it allows broad config replacement over REST when authorization succeeds.
 
-Magic numbers and hardcoded values:
-- Some operational constants are hardcoded:
-  - websocket ping/write constants in `internal/api/websocket/client.go`
-  - 15s frontend polling and 300ms debounce in `web/src/hooks/use-dashboard-data.ts`
-  - several discovery timeouts and pseudo-capacity formulas
-- No application TODO/FIXME/HACK comments were found outside excluded vendor and git hook samples.
+- `internal/config` is one of the better packages in the codebase.
+- Defaults are explicit, validation is meaningful, and environment overrides exist.
+- The largest issue is the runtime update path in `cmd/monsoon/main.go`: `PUT /api/v1/system/config` unmarshals into `config.DefaultConfig()` and writes the whole document back. Omitted fields are reset to defaults. That is dangerous for partial updates and for long-term config drift.
+
+Magic numbers and hardcoded behavior worth calling out:
+
+| Location | Observation |
+|---|---|
+| `internal/ipam/engine.go:165` | utilization uses `active / (active + 80)` heuristic instead of actual capacity |
+| `internal/ipam/engine.go:182` | unassigned count mirrors the same heuristic |
+| `internal/ipam/engine.go:381-400` | synthesized available address expansion is capped at `4096` |
+| `internal/lease/expiry.go` | 30-second sweeper cadence is hardcoded in behavior |
+| `web/src/hooks/use-dashboard-data.ts:402-407` | dashboard performs 15-second polling |
+| `internal/webhook/dispatcher.go` | queue depth is fixed and small |
 
 ### 3.2 Frontend Code Quality
 
-React patterns:
-- Functional components only.
-- React 19 runtime is used, but the code mostly follows React 18-era patterns.
-- State orchestration is centralized in one large hook: `web/src/hooks/use-dashboard-data.ts` (591 LOC).
+Stack summary:
 
-TypeScript strictness:
-- `web/tsconfig.json` enables `strict`, `noUnusedLocals`, and `noUnusedParameters`.
-- That is a positive signal.
+- React `19.2.5`
+- React Router `7.14.0`
+- TypeScript `6.0.2`
+- Vite `7.3.2`
+- Tailwind `4.1.18`
+- Vitest `3.2.4`
 
-Component structure:
-- Mostly page-level files plus a small layout/ui library.
-- Consistent enough, but not deeply modular.
-- The data hook owns auth, polling, live updates, notifications, and many mutations; that is already too much responsibility.
+Assessment:
 
-CSS approach:
-- Tailwind 4 with CSS variables and a small shadcn/Radix layer.
-- Styling quality is solid and more intentional than the average internal dashboard.
+- The frontend is modern, typed, and visually much stronger than the earlier planning docs suggest.
+- The UI is implemented as React functional components with hooks and shared utility components, not the vanilla JavaScript dashboard described in `.project/IMPLEMENTATION.md`.
+- TypeScript strictness is good. The app uses typed API clients, typed state, and avoids obvious `any` abuse.
 
-Bundle size:
-- Production build output:
-  - JS: `438027` bytes before gzip
-  - JS gzip: `135.02 kB`
-  - CSS: `42650` bytes before gzip
-- Fine for an internal tool, but there is no code splitting or route-based lazy loading.
+Strengths:
 
-Accessibility:
-- Some good primitives are inherited from Radix.
-- Several icon buttons include `aria-label`.
-- Gaps remain:
-  - many form controls are placeholder-only and lack explicit `<label>` association
-  - there is no visible keyboard navigation guidance
-  - data-dense pages do not provide alternate accessible summaries
+- Clean component styling with Tailwind and Radix primitives.
+- Good enough UX baseline for an internal admin console.
+- Solid API client abstraction and basic auth gating.
+
+Weaknesses:
+
+- `web/src/hooks/use-dashboard-data.ts` is doing too much. It owns initial hydration, periodic refresh, auth token loading, WebSocket/SSE wiring, and many mutation flows. That hook is a clear refactor candidate.
+- The build output is a single large application chunk: `442.57 kB` uncompressed, `136.29 kB` gzip. There is no route-level lazy loading.
+- Frontend tests are light and mostly infrastructure-level.
+- Some UI copy implies capabilities the backend does not really provide, especially around passive rogue DHCP discovery.
+
+Accessibility and responsive design:
+
+- The Radix-based component set helps baseline accessibility.
+- I did not find a dedicated accessibility test suite or keyboard/screen-reader verification.
+- No serious anti-patterns stood out from code review alone, but accessibility is not actively enforced.
 
 ### 3.3 Concurrency & Safety
 
-Positive findings:
-- Graceful shutdown is implemented in `cmd/monsoon/main.go`.
-- `http.Server.Shutdown` is used for REST/gRPC/MCP servers.
-- Session manager and rate limiter use locking instead of unsynchronized maps.
+Strengths:
+
+- Stores use mutexes consistently.
+- Event fanout, WebSocket hub, webhook dispatcher, and server shutdown all have explicit lifecycle hooks.
+- `http.Server.Shutdown` usage and main-level cancellation handling are present.
 
 Risks:
-- REST rate limiter uses `sync.Map` keyed by client IP with no eviction strategy. A high-cardinality client IP stream will grow memory over time.
-- `events.Broker` uses buffered channels and can drop events for slow subscribers.
-- Websocket `Client.Send` silently drops events when the channel buffer is full (`internal/api/websocket/client.go`), which is acceptable for telemetry but not for guaranteed audit/event delivery.
-- Sessions are in-memory only (`internal/auth/session.go:19-25`), so auth state is lost on restart and cannot be shared across multiple instances.
 
-Race condition risk:
-- No obvious unsynchronized shared-state bug stood out during code reading.
-- Race testing could not be completed successfully:
-  - `go test -race ./...` first failed because `CGO_ENABLED=0`
-  - `CGO_ENABLED=1 go test -race ./...` then failed because `gcc` was not in `PATH`
+- Session store is in-memory and process-local, so auth state is not durable and is not HA-safe.
+- Rate limiting is also in-memory and per-node, which is acceptable for dev but weak in clustered or restart-heavy environments.
+- WebSocket and MCP implementations are custom. That shifts concurrency and protocol correctness risk into application code.
+- HA sync is best-effort and not sequenced strongly enough for confident multi-node consistency.
+
+Potential race and safety concerns:
+
+- Runtime config hot reload updates a limited set of fields, but the broader system still reads a mix of live state and startup state.
+- WebSocket outbound buffering can drop events under pressure.
+- Discovery shells out to OS commands and depends on host environment behavior. This is less a data race issue than an operational fragility issue.
 
 Graceful shutdown:
-- Present and reasonably implemented.
-- This is one of the stronger production-readiness areas.
+
+- Present and generally correct.
+- Not all volatile state is persisted in a way that supports clean multi-node failover.
 
 ### 3.4 Security Assessment
 
-Critical findings:
+Input validation:
 
-1. **Authorization bypass by missing identity in REST mutations**
-   - File: `internal/api/rest/router.go:943-947`
-   - `requireRoleForMutation` returns `true` when identity is absent.
-   - Impact: if auth middleware is disabled, misconfigured, or bypassed, write endpoints still execute.
+- Moderate coverage.
+- Config validation is strong.
+- Route-level validation exists for many fields, but not every subsystem has the same rigor.
 
-2. **Authorization bypass by missing identity in gRPC**
-   - File: `internal/api/grpc/server.go:283-292`
-   - `authorize` returns `nil` when no identity exists in context.
-   - Impact: gRPC role checks are advisory instead of mandatory under missing-auth conditions.
+Injection classes:
 
-3. **Authorization bypass by missing identity in MCP**
-   - File: `internal/api/mcp/handlers.go:792-800`
-   - `requireRole` returns `nil` when no identity exists in context.
-   - Impact: MCP write tools can become unauthenticated mutation paths.
+- SQL injection: not applicable because there is no SQL database.
+- Command injection: low direct risk because discovery command execution is argument-based and uses internal IP inputs, but the shell-out approach still expands the attack and portability surface.
+- XSS: React output encoding helps. Security headers include a CSP, but the CSP is relatively simple and I did not verify every inline behavior against it.
 
-4. **Permissive CORS defaults**
-   - Files: `internal/config/config.go:290`, `configs/monsoon.yaml:44`, `internal/api/rest/middleware.go:67-90`
-   - Default/sample config uses wildcard origins and middleware reflects arbitrary origins when wildcarded.
+Secrets management:
 
-5. **Insecure bootstrap/default-admin behavior**
-   - Files: `internal/auth/local.go:18-35`, `configs/monsoon.yaml:64-70`
-   - If no admin hash is set, `EnsureAdmin` creates the admin account with password `"admin"`.
-   - Sample config ships with empty admin hash and `session.secure: false`.
-
-6. **Websocket upgrade lacks origin and auth checks**
-   - File: `internal/api/websocket/client.go:52-79`
-   - The upgrade path validates upgrade headers and key but does not inspect `Origin`, cookies, or bearer identity directly.
-
-Other security observations:
-- Password hashing uses bcrypt, which is good.
+- I did not find hardcoded secrets in source.
+- Auth bootstrap expects an empty admin hash initially and supports first-user bootstrap through the API.
 - API tokens are stored hashed, which is good.
-- No obvious hardcoded secrets were found in source code.
-- No TLS support is implemented even though the spec and tasks promise it.
-- LDAP auth is not implemented despite config/spec surface.
-- REST rate limiting exists; DHCP starvation protection, per-MAC limits, and websocket/MCP/gRPC rate limits do not.
+
+TLS and headers:
+
+- TLS is supported for REST, gRPC, and MCP via configured cert/key files.
+- Security headers middleware sets CSP, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, and HSTS for HTTPS requests.
+- This is better than many early-stage services.
+
+CORS:
+
+- CORS config is explicit.
+- Validation prevents `*` origins when auth is enabled, which is a strong guardrail.
+
+Auth and authorization quality:
+
+- Local auth is real and materially useful.
+- Lockout logic and auth-specific rate limiting are present.
+- Sessions are not durable and not shared across nodes.
+- LDAP is configured but not implemented.
+
+Specific security issues found:
+
+| Severity | Location | Finding |
+|---|---|---|
+| Medium | `internal/auth/session.go` | sessions persist on one node, but failover/peer-shared continuity is still absent |
+| High | `internal/ha/*` | HA sync and heartbeat are plaintext custom TCP unless protected externally; not production-grade for hostile networks |
+| Medium | `internal/ha/heartbeat.go:71-78` | HA secret check uses plain string equality, not constant-time compare |
+| Low | `cmd/monsoon/main.go` | config update path now merges safely, but should keep regression coverage because it remains a sensitive operator workflow |
+| Medium | `internal/discovery/engine.go` | discovery relies on shelling out to host commands and reports sensor health too optimistically |
 
 ## 4. Testing Assessment
 
 ### 4.1 Test Coverage
 
-Measured test inventory:
-- 21 `_test.go` files
-- 38 `Test*` functions
-- 0 benchmark tests
-- 0 fuzz tests
-- 0 frontend tests
+Measured results:
 
-Command results:
-- `go test ./... -count=1`: passed
-- `go build ./cmd/monsoon`: passed
-- `go vet ./...`: passed
-- `npm run build` in `web/`: passed
-- `staticcheck ./...`: failed with 5 unused-function findings
-- `go test -race ./...`: could not complete because race mode required cgo and then failed because `gcc` was not on `PATH`
-- `go test -cover ./...`: partially useful; 15 tested packages reported coverage, but the full run failed due local Go tool version `1.26.1` vs toolchain `1.26.2` mismatch on several no-test/internal packages
+- `go test ./... -count=1` passed
+- `go test -coverprofile cover.out ./...` passed
+- Total Go statement coverage: **65.3%**
+- `go test -race ./...` did **not** run successfully on this machine because the Windows environment had `CGO_ENABLED` disabled: `-race requires cgo`
+- `npm test -- --run` passed in `web/`: 3 files, 6 tests
 
-Coverage signal available from the partial `-cover` run:
-- 15 tested packages reported statement coverage
-- average among reported packages: **56.6%**
-- package coverage ranged from **36.5%** (`internal/lease`) to **71.8%** (`internal/ha`)
+Coverage breakdown by package from the actual run:
 
-Packages with zero test files:
-- `cmd/monsoon`
-- `internal/config`
-- `internal/dashboard`
-- `internal/events`
-- `internal/metrics`
-- `internal/storage`
+| Package | Coverage |
+|---|---|
+| `cmd/monsoon` | 23.0% |
+| `internal/api/grpc` | 66.7% |
+| `internal/api/mcp` | 54.5% |
+| `internal/api/rest` | 59.1% |
+| `internal/api/websocket` | 69.8% |
+| `internal/audit` | 66.7% |
+| `internal/auth` | 64.3% |
+| `internal/config` | 84.3% |
+| `internal/dashboard` | 100.0% |
+| `internal/dhcpv4` | 73.4% |
+| `internal/dhcpv6` | 68.3% |
+| `internal/discovery` | 61.0% |
+| `internal/events` | 100.0% |
+| `internal/ha` | 71.8% |
+| `internal/ipam` | 78.6% |
+| `internal/lease` | 83.1% |
+| `internal/metrics` | 98.0% |
+| `internal/migrate` | 65.5% |
+| `internal/settings` | 69.6% |
+| `internal/storage` | 83.5% |
+| `internal/webhook` | 71.4% |
+
+Packages with zero Go tests:
+
+- None. Every Go package has at least one internal test file.
+
+Test quality:
+
+- Backend coverage is materially better than the average greenfield side-project.
+- The test suite exercises many core helpers and package-level behaviors.
+- The weak spots are cross-package integration, end-to-end DHCP flows, and browser/dashboard behavior.
 
 Test types present:
-- Unit tests: yes
-- Package-level integration tests: yes (`rest`, `grpc`, `mcp`, `websocket`, `ha`, `migrate`)
-- E2E tests: no
-- Frontend component tests: no
-- Browser tests: no
-- Benchmarks: no
-- Fuzzing: no
 
-Test quality assessment:
-- Better than the file count suggests. The API transport layers and HA code do have meaningful tests.
-- Biggest testing blind spots are exactly where the production risk is highest:
-  - `cmd/monsoon` startup/config orchestration
-  - storage engine internals
-  - authz enforcement edge cases
-  - frontend behavior
+- Unit tests: yes
+- Integration-style handler tests: yes
+- Frontend component/client tests: minimal
+- Benchmarks: none found
+- Fuzz tests: none found
+- End-to-end tests: none found
+- Load tests: none found
 
 ### 4.2 Test Infrastructure
 
-Test helpers/fixtures:
-- Mostly local package fixtures and temp dirs.
-- Good use of `httptest` and ephemeral storage dirs.
+Backend:
 
-CI test pipeline:
-- No `.github/workflows` were found.
-- That is a major maturity gap.
+- The repository supports `go test ./...` cleanly.
+- CI runs vet, tests, and build.
+- There is no evidence of flaky test management, matrix builds, or deeper platform coverage.
 
-Frontend tests:
-- None present.
+Frontend:
+
+- Vitest exists and works.
+- Coverage is not configured or enforced.
+- No Playwright/Cypress-style end-to-end coverage exists.
+
+CI pipeline:
+
+- `.github/workflows/ci.yml` has two jobs:
+  - Go: checkout, setup-go, `go vet`, `go test`, `go build`
+  - Web: checkout, setup-node, `npm ci`, `npm run test`, `npm run build`
+
+Assessment:
+
+- Good baseline CI for a young project.
+- No race-test job, no coverage gates, no release workflow, no signed artifacts, no deployment automation.
 
 ## 5. Specification vs Implementation Gap Analysis
 
-This is the most important section of the audit. The gap between planning documents and implementation is substantial.
+This is the most important section of the audit. The largest problem in this repository is not code that does not compile. It is **documentation claiming a more advanced product than the code actually implements**.
 
 ### 5.1 Feature Completion Matrix
 
 | Planned Feature | Spec Section | Implementation Status | Files/Packages | Notes |
 |---|---|---|---|---|
-| DHCPv4 server | SPEC sections 3, 5 | Partial | `internal/dhcpv4`, `internal/lease` | Core flows exist; security controls and some RFC breadth are missing |
-| DHCPv6 server | SPEC section 8 | Partial | `internal/dhcpv6` | Solicit/request/renew/release/info and relay exist; overall feature breadth is narrower than spec |
-| IPAM subnet CRUD | SPEC section 4 | Complete | `internal/ipam`, REST/gRPC/MCP | Strongest implemented domain area |
-| Address lifecycle CRUD/history | SPEC 4.1.2, 6.1 | Partial | `internal/ipam`, REST/gRPC | List/get/reserve/release-like behavior exists, but no full history/audit UI workflow |
-| Reservation CRUD | SPEC section 4 | Complete | `internal/ipam`, REST, MCP | Implemented and tested |
-| VLAN CRUD | SPEC 4.1.2, 6.1.5 | Missing | none | No `internal/ipam/vlan.go`, no REST VLAN routes |
-| Discovery scan engine | SPEC section 5 | Partial | `internal/discovery` | Scan orchestration exists, but raw ARP/ICMP/passive sniffing/OUI/true rogue DHCP detection do not |
-| Rogue DHCP detection | SPEC 5, 10.2 | Partial | `internal/discovery` | API exists, actual detection is mostly placeholder-level |
-| DDNS / RFC 2136 | SPEC 9.3, 10.1 | Missing | none | Completely absent |
-| Local authentication | SPEC 10 | Partial | `internal/auth`, REST | Implemented, but default bootstrap and session persistence are weak |
-| LDAP authentication | SPEC 10 | Missing | none | Not implemented |
-| Session and token auth | SPEC 10 | Partial | `internal/auth` | Implemented, but sessions are in-memory only |
-| REST API | SPEC 6.1 | Partial | `internal/api/rest` | Good surface, but significantly smaller than spec and not hardened enough |
-| gRPC API | SPEC 6.2 | Partial | `internal/api/grpc` | Subnet/address/lease/discovery exist; authz flaw and no mTLS |
-| WebSocket live events | SPEC 6.3 | Partial | `internal/api/websocket` | Works, but auth/origin hardening is missing |
-| MCP server | SPEC 6.4 | Complete | `internal/api/mcp` | One of the more complete advanced surfaces |
-| Prometheus metrics endpoint | SPEC 11.1 | Missing/Partial | `internal/metrics` | Custom metrics registry exists, `/system/metrics` does not |
-| Structured JSON logging | SPEC 7.1, 11 | Missing | app-wide | Plain `log.Printf` is used |
-| HA active-passive | SPEC 9.2 | Partial | `internal/ha` | Heartbeats, election, witness, manual failover, sync exist |
-| HA load-sharing | SPEC 9.3 | Missing | `internal/ha` | Mode string exists, real split-scope behavior does not |
-| HA WAL streaming | SPEC 9.2 | Missing | `internal/ha` | Initial snapshot + event sync exists, not WAL streaming |
-| Migration tooling | SPEC 12 | Partial | `internal/migrate` | Strong implementation for several formats; task list still marks much of it undone |
-| Embedded dashboard | SPEC 7 | Partial | `web`, `internal/dashboard` | Real SPA exists, but no frontend tests and some pages are shallower than spec |
-| TLS/ACME | SPEC 10.3 | Missing | none | No HTTPS support in runtime |
+| DHCPv4 server | SPEC Section 3 | Complete | `internal/dhcpv4` | Real server, pools, rapid commit, tests present |
+| DHCPv6 server | SPEC Section 3 | Complete | `internal/dhcpv6` | Real server with relay/DUID support |
+| Core subnet CRUD | SPEC Section 4 | Complete | `internal/ipam`, `internal/api/rest`, `internal/api/grpc` | Works, but API shape differs from spec |
+| Address inventory/read model | SPEC Section 4 | Partial | `internal/ipam`, REST read endpoints | Read/search path exists; full CRUD/history does not |
+| Reservations | SPEC Section 4 | Complete | `internal/ipam`, REST, tests | CRUD present |
+| Hierarchical subnet tree | SPEC Section 4 | Missing | none | No actual subnet tree, split/merge, parent-child model |
+| Capacity forecasting/utilization accuracy | SPEC Section 4 | Partial | `internal/ipam/engine.go` | Summary math now uses real DHCP pool/subnet capacity, but forecasting/alert depth from the spec is still missing |
+| VLAN management | SPEC Section 4, Section 13 | Partial | storage tree only, phpIPAM importer | Import support exists, first-class CRUD does not |
+| Embedded B+Tree storage engine | SPEC Section 5 | Partial | `internal/storage` | Snapshot/WAL exist; real B+Tree/page architecture does not |
+| REST API breadth promised in README | SPEC Section 6 | Partial | `internal/api/rest` | Health, config, leases, subnets, reservations, discovery present; many endpoints absent |
+| gRPC API | SPEC Section 6 | Partial | `internal/api/grpc` | Useful but custom/nonstandard and narrower than described |
+| Web dashboard | SPEC Section 7 | Complete | `web`, `internal/dashboard` | Real React app exists |
+| Config hot reload | SPEC Section 8 | Partial | `cmd/monsoon/runtime_config.go` | Only a small whitelist is hot-reloadable |
+| High availability/failover | SPEC Section 9 | Partial | `internal/ha` | Heartbeat + sync + manual failover exist; not enterprise-grade |
+| Security hardening | SPEC Section 10 | Partial | `internal/auth`, REST middleware | Local auth is solid; LDAP absent; sessions are restart-durable but not HA-shared |
+| LDAP/AD auth | SPEC Section 10 | Missing | config only | No implementation package |
+| Metrics/observability | SPEC Section 11 | Partial | `internal/metrics`, main | Metrics endpoint exists; no tracing, shallow readiness |
+| Docker/deployment readiness | SPEC Section 12 | Partial | `Dockerfile`, `Makefile` | Single image works; no release automation or deployment docs |
+| Migration/import tooling | SPEC Section 13 | Strong | `internal/migrate` | CSV, ISC DHCP, Kea, NetBox, phpIPAM all implemented |
+| Passive discovery / rogue DHCP sensor | SPEC Section 4, README | Missing | `internal/discovery` | Current code does not implement true passive sensor behavior |
+| Backup and restore | SPEC Section 12 | Partial | `cmd/monsoon`, REST system routes | Backup and restore exist in both CLI and REST, but operator workflow/docs are still immature |
 
 ### 5.2 Architectural Deviations
 
-1. **Storage engine is not the specified B+Tree/page-manager database**
-   - Planned: page manager + B+Tree + iterator + transaction-centric storage.
-   - Actual: in-memory map plus sorted key slice per tree, WAL append, snapshot serialization, and a `PageManager` that does not define the real storage behavior.
-   - Improvement or regression: regression relative to the published architecture claims, though acceptable as an MVP implementation.
+Major deviations from the written architecture:
 
-2. **Dashboard implementation diverged from planned vanilla JS structure**
-   - Planned in `IMPLEMENTATION.md` and `TASKS.md`: `web/js/*`, hash router, hand-rolled pages.
-   - Actual: React 19 + Vite + Tailwind + Radix.
-   - Improvement or regression: improvement in maintainability and UX, but it means planning docs are stale.
+1. **Storage engine reality vs documentation**
+   - Spec/implementation docs describe a custom embedded storage system built around a B+Tree/page architecture.
+   - `internal/storage/btree.go` is not a page-backed B+Tree. It is a mutex-protected sorted key slice plus `map[string][]byte`.
+   - WAL and snapshot support are real, but the central data structure is far simpler than the documents claim.
+   - Verdict: regression from documented ambition, though not automatically a code bug.
 
-3. **Discovery implementation is much lighter than specified**
-   - Planned: raw ARP, raw ICMP, passive sniffing, OUI, rogue DHCP listener, scheduler.
-   - Actual: lease/IPAM comparison, `arp -a`, optional ping/TCP probe, reverse DNS, stored scan results.
-   - Improvement or regression: simpler implementation, but materially incomplete relative to spec.
+2. **Dashboard technology stack**
+   - `.project/IMPLEMENTATION.md` describes a vanilla JS/CSS dashboard.
+   - Actual implementation is React 19 + Vite + Tailwind + Radix in `web/`.
+   - Verdict: improvement over the documented plan, but the docs are stale.
 
-4. **HA sync model is simplified**
-   - Planned: WAL streaming plus load-sharing mode.
-   - Actual: full snapshot sync plus lease event sync, active-passive behavior, manual failover.
-   - Improvement or regression: reasonable simplification, but should not be advertised as complete HA feature parity.
+3. **Discovery architecture**
+   - Spec implies active and passive discovery, rogue DHCP detection, and broader sensor behavior.
+   - Current implementation uses `arp`, `ping`, TCP probes, and optional reverse DNS. `SensorOnline` is reported optimistically, and `RogueServers` is currently forced empty in scans.
+   - Verdict: major regression from documented capability.
 
-5. **Security model is under-implemented relative to spec**
-   - Planned: TLS, LDAP, stronger authz/rate limiting, DHCP starvation mitigation.
-   - Actual: local auth, bearer tokens, sessions, basic REST rate limiting only.
-   - Improvement or regression: incomplete implementation.
+4. **HA claims**
+   - Docs imply stronger failover and operational resilience than current code justifies.
+   - Current HA is custom JSON-over-TCP heartbeat and snapshot/lease sync with limited correctness guarantees.
+   - Verdict: partial implementation, oversold by documentation.
+
+5. **API surface**
+   - README lists resource paths and operations that do not exist.
+   - Actual REST API is narrower and uses some query-string mutation patterns.
+   - Verdict: regression from external contract expectations.
 
 ### 5.3 Task Completion Assessment
 
-Literal checklist status from `.project/TASKS.md`:
-- Completed: 28
-- Incomplete: 112
-- Listed total: 140
-- Checklist completion: **20.0%**
+Measured from `.project/TASKS.md`:
 
-That checklist percentage is misleadingly low because many implemented features remain unchecked. Examples:
-- Auth exists, but phase 7 is mostly unchecked.
-- REST, dashboard, gRPC, MCP, DHCPv6, and parts of HA are implemented but incompletely reflected in checklist state.
-- Migration tooling exists but several migration tasks remain unchecked.
+- Total checklist items: **140**
+- Checked items: **28**
+- Documented completion rate: **20%**
 
-Actual implementation completion estimate based on code, not checkbox state: **roughly 55-60% of the promised scope**
+Reality check:
 
-What is genuinely complete or mostly complete:
-- Config
-- DHCPv4 base server
-- lease engine
-- subnet/reservation IPAM
-- local auth
-- REST API core
-- dashboard shell and main pages
-- websocket
-- gRPC
-- MCP
-- DHCPv6 core
-- basic HA active-passive
-- webhook delivery
+- The codebase is clearly further along than 20%. The task tracker is stale.
+- Based on implementation reviewed across Go, UI, and infra, actual functional completion is closer to **60-70% of the envisioned v1 scope**.
+- The hardest missing items are not cosmetic. They are the production-critical ones: truthful HA, peer-shared auth state, accurate discovery, fuller IPAM feature depth, and better operational tooling.
 
-What is genuinely incomplete:
-- VLAN management
-- DDNS
-- LDAP
-- TLS
-- Prometheus endpoint
-- real rogue DHCP detection
-- load-sharing HA
-- WAL streaming HA
-- frontend automated testing
-- CI/CD
+Blocked or effectively abandoned tasks:
+
+- LDAP/AD integration
+- True passive/rogue DHCP discovery
+- Full VLAN/domain model surfaced through APIs/UI
+- Richer subnet-tree workflows promised by the spec
+- Production-grade HA guarantees
+
+Estimated remaining effort for incomplete material promised by the docs:
+
+- Minimum to make the current product honest and operable: 4-6 weeks
+- To actually meet most of the written specification: 10-14 weeks
 
 ### 5.4 Scope Creep Detection
 
-Features/choices present in code but not aligned with original implementation plan:
-- React/Vite/Tailwind/Radix frontend instead of planned vanilla JS pages
-- custom gRPC transport implementation
-- MCP server with a relatively rich AI tool surface
-- inline runtime config editor in the dashboard
-- backup creation/listing surfaced directly in UI
+Features present in code that were not central in the original core DHCP/IPAM story:
+
+- MCP server and toolset
+- React dashboard that is significantly more advanced than the implementation plan text
+- Multi-source migrations from NetBox/phpIPAM/Kea/ISC DHCP/CSV
+- Webhook delivery subsystem
+- WebSocket and SSE live update stack
 
 Assessment:
-- The frontend rewrite was valuable.
-- MCP is a valuable addition.
-- Hand-rolled gRPC, websocket, and storage are complexity multipliers and should be treated as technical debt unless there is a strong long-term reason to own them.
+
+- Migration tooling is valuable scope creep. It helps adoption.
+- MCP is interesting but nonessential for v1 production readiness. It increases testing and security surface area before the fundamentals are fully closed.
+- The modern dashboard is valuable, but it also exposes spec drift because the UI makes the product look more complete than parts of the backend actually are.
 
 ### 5.5 Missing Critical Components
 
-Highest impact missing pieces:
+Most critical items promised but absent or materially incomplete:
 
-1. Authorization hardening across REST/gRPC/MCP
-2. TLS/HTTPS support
-3. Restrictive production CORS defaults
-4. VLAN CRUD and VLAN domain model
-5. DDNS client and integration
-6. LDAP support if enterprise auth is a real requirement
-7. `/metrics` Prometheus-compatible endpoint
-8. HA WAL streaming and real load-sharing mode
-9. CI pipeline and frontend tests
+1. Peer-shared sessions or another HA-safe identity continuity model
+2. Real LDAP/AD auth implementation
+3. Real passive discovery and meaningful rogue DHCP detection
+4. Full storage design parity with the documented architecture, or documentation corrected to reflect the simpler engine
+5. Resource-complete IPAM API surface, including VLAN management and richer address lifecycle operations
+6. Production-grade HA transport security and stronger consistency guarantees
 
 ## 6. Performance & Scalability
 
 ### 6.1 Performance Patterns
 
-Potential bottlenecks:
-- `internal/ipam/engine.go` address listing synthesizes and expands pool state on demand. Large subnets will be expensive.
-- Utilization calculations are not based on real pool capacity in at least two places:
-  - `internal/ipam/engine.go:182`
-  - `web/src/pages/overview-page.tsx:34`
-- The frontend does a wide `Promise.all` reload of many endpoints every 15s in `use-dashboard-data.ts`.
-- Discovery uses shelling out and active probing; this will not scale elegantly.
+Potential hot paths:
 
-Memory allocation patterns:
-- Storage trees are kept in memory and serialized to snapshots/WAL.
-- This is fine for moderate scale, but it is not the disk-indexed engine implied by the docs.
+- Lease lookup and update paths in DHCP handlers
+- Dashboard hydration, which fetches many resources at startup and then polls every 15 seconds
+- Discovery scans, especially if executed across larger networks via shelling out to system tools
+- Snapshot/WAL operations in the storage engine
 
-Database/query patterns:
-- No external DB.
-- Many operations are scan/synthesize patterns over internal trees, not index-backed query plans in the traditional sense.
+Performance positives:
 
-Caching strategy:
-- Minimal.
-- Frontend state acts as a client-side cache, but there is no stale-while-revalidate or route-based caching.
+- The current in-memory data structures are simple and likely fast for small to moderate datasets.
+- The app does not pay ORM or SQL overhead.
+- React build output is not tiny, but it is still serviceable for an internal admin tool.
 
-HTTP/static optimization:
-- Vite build is production-ready.
-- Embedded dashboard serving exists.
-- No obvious compression layer on REST responses.
+Performance concerns:
+
+- The storage engine trades scalability for simplicity. Sorted slice insert/delete behavior is not a credible long-term substitute for a real B+Tree if dataset size grows materially.
+- IPAM address list synthesis can manufacture large result sets and caps them with a hardcoded limit.
+- Dashboard polling plus WebSocket/SSE can duplicate load and cause unnecessary refresh work.
+- Discovery uses external command execution, which is slower and less predictable than native packet or raw-socket approaches.
 
 ### 6.2 Scalability Assessment
 
-Horizontal scalability:
-- Limited.
-- In-memory sessions block easy multi-instance stateless scaling.
-- Storage is process-local.
-- HA exists, but not as a general horizontal scale-out model.
+Can it scale horizontally?
+
+- Stateless HTTP surfaces can scale read traffic somewhat.
+- Stateful behavior limits meaningful horizontal scale:
+  - session store is in-memory and node-local
+  - rate limiting is node-local
+  - HA is custom and limited
+  - storage is local-disk embedded
 
 State management:
-- Strongly stateful process.
-- HA can replicate lease state to a peer but does not turn the app into a horizontally scalable service fleet.
 
-Queue/worker patterns:
-- Event broker plus webhook dispatcher are lightweight internal async paths.
-- No durable queue.
+- This is fundamentally a single-node product with partial active-passive aspirations, not a horizontally scalable control plane.
 
-Connection/resource management:
-- HTTP server settings are reasonable.
-- REST rate limiter has no cleanup.
-- Websocket clients are bounded but lossy under pressure.
+Back-pressure and resource control:
 
-Back-pressure:
-- Limited and mostly implicit via bounded channels and token buckets.
+- Some bounded queues exist, such as webhook dispatch and WebSocket buffers.
+- There is no comprehensive admission control or back-pressure strategy for discovery, dashboard refresh, or MCP operations.
+
+Connection and resource management:
+
+- No database connection pool exists because there is no external DB.
+- File-based storage and WAL handles are managed explicitly.
+- The Docker image is minimal, but production runtime constraints are not documented.
 
 ## 7. Developer Experience
 
 ### 7.1 Onboarding Assessment
 
-Getting started:
-- Easy locally if Go 1.26 and Node are available.
-- `Makefile` offers `build`, `test`, `lint`, `run`, `web-build`, `web-dev`, and `release`.
-- README gives useful setup commands.
+The onboarding story is decent:
 
-Where onboarding breaks:
-- README overstates feature completeness.
-- Coverage tooling surfaced a local toolchain version mismatch (`go1.26.1` vs `go1.26.2`) that should be cleaned up.
-- No CI means new contributors do not get guardrails.
+- `README.md` is broad and gives the project identity clearly.
+- `Makefile` covers build, release, test, lint, run, clean.
+- Example config exists in `configs/monsoon.yaml`.
+- The project builds locally without unusual setup beyond Go and Node.
 
-Hot reload / live reload:
-- Frontend has Vite dev support.
-- Backend does not have an equivalent developer hot-reload workflow.
+Pain points:
+
+- The README is more ambitious than the implementation, so setup guidance and feature expectations are not reliably aligned.
+- No contributor guide, ADR collection, or environment troubleshooting guide exists.
+- No devcontainer, task runner, or scripted "first-run with seeded admin" workflow exists.
 
 ### 7.2 Documentation Quality
 
-README completeness:
-- High effort, but not fully accurate.
-- It reads like a product announcement for a more complete system than the current codebase delivers.
+Documentation present:
 
-API documentation:
-- No OpenAPI or protobuf-generated docs.
-- README endpoint lists are partly inaccurate relative to actual routes.
+- `README.md`
+- `.project/SPECIFICATION.md`
+- `.project/IMPLEMENTATION.md`
+- `.project/TASKS.md`
+- existing generated audit docs
 
-Code comments and godoc:
-- Comments are sparse but generally acceptable.
-- Public documentation quality is lower than the README marketing quality.
+Assessment:
 
-Architecture records:
-- `SPECIFICATION.md`, `IMPLEMENTATION.md`, and `TASKS.md` exist and are useful.
-- They are also stale in important areas.
+- Quantity is good.
+- Accuracy is the problem.
+- The planning docs are useful to understand intent, but they should not be treated as factual architecture documentation anymore.
+- The README needs a "currently implemented" section grounded in the real code, especially for discovery, HA, storage, and API breadth.
 
 ### 7.3 Build & Deploy
 
 Build process:
-- Simple and good.
 
-Cross-compilation:
-- Supported by `Makefile release`.
+- `Makefile` is simple and works.
+- Release target cross-compiles for common OS/arch targets.
 
-Container readiness:
-- Dockerfile is clean and small, but:
-  - final image is `scratch`
+Containerization:
+
+- `Dockerfile` uses a Go Alpine build stage and a `scratch` runtime image.
+- This is lean, but it also means:
+  - no shell/tools for debugging
+  - no CA bundle unless statically embedded requirements are satisfied
   - no non-root user
-  - no CA cert handling
-  - no runtime TLS assets story
+  - privileged ports and DHCP networking requirements are not documented
 
 CI/CD maturity:
-- No pipeline found.
+
+- Baseline CI exists.
+- No `.goreleaser.yml`
+- No deployment automation
+- No release signing
+- No artifact publishing
 
 ## 8. Technical Debt Inventory
 
-### [Critical] Blocks production readiness
+### Critical
 
 | Location | Debt | Suggested Fix | Effort |
 |---|---|---|---|
-| `internal/api/rest/router.go:943-947` | Missing identity allows REST mutations | Make missing identity fail closed and add tests | 2-4h |
-| `internal/api/grpc/server.go:283-292` | Missing identity allows gRPC authorization bypass | Fail closed and test unary/stream paths | 3-5h |
-| `internal/api/mcp/handlers.go:792-800` | Missing identity allows MCP authorization bypass | Fail closed and test write tools | 2-4h |
-| `internal/api/websocket/client.go:52-79` | No origin/auth validation on websocket upgrade | Enforce auth/origin and add CSWSH protections | 4-8h |
-| `internal/config/config.go:290`, `configs/monsoon.yaml:44,64-70` | Insecure defaults and sample config | Ship production-safe defaults and explicit bootstrap flow | 4-6h |
-| project-wide | No TLS support | Implement HTTPS and certificate configuration or clearly scope to reverse-proxy-only deployment | 12-24h |
+| `internal/auth/session.go` | sessions are durable only per node and not HA-shared | move to shared session coordination or a stateless/token-first model | 2-4 days |
+| `internal/discovery/engine.go` | discovery claims exceed actual capability; rogue DHCP detection is effectively placeholder | either narrow product claims or implement real packet/sensor workflow | 1-2 weeks |
+| `internal/storage/*` vs docs | documented storage architecture does not match implementation reality | either implement real page-backed tree or rewrite docs and expectations | 1-3 weeks depending on path |
+| `cmd/monsoon/main.go` | config update is now safer, but still deserves explicit PATCH/field-mask semantics | add field-mask aware PATCH or preserve strong merge tests | 1-2 days |
+| `internal/ha/*` | HA transport and replication are too weak for confident production failover | add authenticated encrypted transport and stronger sync semantics | 1-2 weeks |
 
-### [Important] Should fix before v1.0
-
-| Location | Debt | Suggested Fix | Effort |
-|---|---|---|---|
-| `internal/storage/*` | Actual storage differs from published architecture | Either simplify docs or finish real on-disk indexed engine | 40-120h |
-| `internal/ipam/engine.go:182`, `web/src/pages/overview-page.tsx:34` | Fake utilization formula | Base utilization on real pool capacity | 2-4h |
-| `web/src/hooks/use-dashboard-data.ts` | Frontend god hook | Split by domain/resource and isolate live updates | 8-16h |
-| `internal/api/rest/router.go` | Oversized router/handler file | Split into feature handler files | 6-10h |
-| `internal/ha/*` | No WAL streaming or real load-sharing | Implement or remove from claims | 24-60h |
-| `.project/TASKS.md`, `README.md` | Documentation drift | Reconcile docs with code and reopen tasks honestly | 6-12h |
-| project-wide | No CI, no frontend tests | Add CI, API smoke tests, component tests | 16-32h |
-
-### [Minor] Nice to fix
+### Important
 
 | Location | Debt | Suggested Fix | Effort |
 |---|---|---|---|
-| `internal/api/rest/middleware.go` | Plain text logging | Adopt structured logging | 4-8h |
-| `internal/metrics/*` | Custom metrics implementation | Move to clearer Prometheus-compatible naming/export guarantees | 8-16h |
-| frontend | No lazy loading | Add route-based code splitting | 3-6h |
-| project-wide | A few unused helpers | Remove or use dead code found by staticcheck | 1-2h |
+| `internal/ipam/engine.go:165,182` | bogus utilization math | compute from actual subnet/pool size and real address states | 1-2 days |
+| `web/src/hooks/use-dashboard-data.ts` | monolithic dashboard data hook | split by domain and transport concern | 2-3 days |
+| `internal/api/grpc` | custom gRPC transport | either tighten compatibility testing or migrate to standard grpc-go | 1-2 weeks |
+| `internal/api/websocket` | custom WebSocket stack | adopt a proven library or increase fuzz/protocol testing | 3-5 days |
+| `internal/auth` | LDAP config without implementation | implement or remove from docs/config | 2-5 days |
+| `README.md` and `.project/*` | stale claims | align docs with code | 2-3 days |
+
+### Minor
+
+| Location | Debt | Suggested Fix | Effort |
+|---|---|---|---|
+| `Dockerfile` | no non-root runtime metadata or operational notes | document required capabilities and harden runtime image | 1 day |
+| `internal/metrics/prometheus.go` | custom metrics format lacks full Prometheus richness | consider adopting official client lib | 1-2 days |
+| frontend build | single large JS chunk | add route-level lazy loading | 1-2 days |
+| tests | no benchmark/fuzz/load coverage | add targeted cases around transports and DHCP parsing | ongoing |
 
 ## 9. Metrics Summary Table
 
 | Metric | Value |
 |---|---|
-| Total Go Files | 108 |
-| Total Go LOC | 19732 |
-| Total Frontend Files | 32 |
-| Total Frontend LOC | 3302 |
-| Test Files | 21 |
-| Test Coverage (measured) | 56.6% average across 15 covered packages; full `./...` coverage run blocked by Go toolchain mismatch |
-| External Go Dependencies | 2 total (1 direct, 1 indirect) |
-| External Frontend Dependencies | 24 total (15 runtime, 9 dev) |
-| Open TODOs/FIXMEs | 0 in application code |
-| API Endpoints | 45 REST routes, 18 gRPC methods, 15 MCP tools |
-| Spec Feature Completion | About 55-60% by implemented scope, but with major missing security and platform features |
-| Task Completion | 20% by checklist, materially higher in code reality |
-| Overall Health Score | 5.5/10 |
+| Total Go Files | 137 |
+| Total Go LOC | 24,956 |
+| Total Frontend Files | 36 |
+| Total Frontend LOC | 3,485 |
+| Test Files | 49 |
+| Test Coverage | 65.3% |
+| External Go Dependencies | 6 resolved modules, 2 explicit |
+| External Frontend Dependencies | 28 direct entries (15 prod, 13 dev) |
+| Open TODOs/FIXMEs | 0 |
+| API Endpoints | 45 REST/WS routes, 11 gRPC RPCs, 15 MCP tools |
+| Spec Feature Completion | ~65% of intended v1 scope |
+| Task Completion | 20% documented in `TASKS.md`; ~60-70% actual by code review |
+| Overall Health Score | 6/10 |
+
+

@@ -15,6 +15,9 @@ describe("AuthGate", () => {
 
     fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "operator" } })
     fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "secret-pass" } })
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Login" })).toBeEnabled()
+    })
     fireEvent.click(screen.getByRole("button", { name: "Login" }))
 
     await waitFor(() => {
@@ -37,6 +40,9 @@ describe("AuthGate", () => {
     expect(screen.getByText("Authentication required. Please sign in.")).toBeInTheDocument()
 
     fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "bootstrap-pass" } })
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Bootstrap Admin" })).toBeEnabled()
+    })
     fireEvent.click(screen.getByRole("button", { name: "Bootstrap Admin" }))
 
     await waitFor(() => {

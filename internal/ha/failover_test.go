@@ -37,6 +37,17 @@ func TestHAManagersHeartbeatSyncAndFailover(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed lease: %v", err)
 	}
+	if err := leaseStoreB.Upsert(context.Background(), lease.Lease{
+		IP:         "10.10.10.200",
+		MAC:        "FF:EE:DD:CC:BB:AA",
+		State:      lease.StateBound,
+		SubnetID:   "10.10.10.0/24",
+		StartTime:  now,
+		Duration:   time.Hour,
+		ExpiryTime: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed stale lease on secondary: %v", err)
+	}
 
 	brokerA := events.NewBroker(16)
 	brokerB := events.NewBroker(16)
@@ -88,6 +99,10 @@ func TestHAManagersHeartbeatSyncAndFailover(t *testing.T) {
 	waitFor(t, 4*time.Second, func() bool {
 		_, err := leaseStoreB.GetByIP(context.Background(), "10.10.10.10")
 		return err == nil
+	})
+	waitFor(t, 4*time.Second, func() bool {
+		_, err := leaseStoreB.GetByIP(context.Background(), "10.10.10.200")
+		return err != nil
 	})
 
 	updated := lease.Lease{

@@ -2,9 +2,22 @@ import { Search, ShieldPlus } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import { useDashboard } from "@/app/dashboard-context"
+import { EmptyState } from "@/components/shared/empty-state"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 
 export function LeasesPage() {
   const { leases, release, reserveLease, canMutate } = useDashboard()
@@ -32,13 +45,22 @@ export function LeasesPage() {
         <CardContent>
           <div className="mb-4 flex items-center gap-2 rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
             <Search className="size-4 text-muted-foreground" />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-8 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               placeholder="Search by IP, MAC, hostname, subnet..."
+              aria-label="Search leases"
             />
           </div>
+
+          {filtered.length === 0 ? (
+            <EmptyState
+              icon={Search}
+              title="No leases found"
+              description="No lease records match the current search query."
+            />
+          ) : null}
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[760px] text-sm">
@@ -68,9 +90,27 @@ export function LeasesPage() {
                           <ShieldPlus className="mr-2 size-4" />
                           Reserve
                         </Button>
-                        <Button variant="outline" size="sm" onClick={() => void release(lease.ip)} disabled={!canMutate}>
-                          Release
-                        </Button>
+                        <AlertDialog>
+                          <AlertDialogTrigger asChild>
+                            <Button variant="outline" size="sm" disabled={!canMutate}>
+                              Release
+                            </Button>
+                          </AlertDialogTrigger>
+                          <AlertDialogContent>
+                            <AlertDialogHeader>
+                              <AlertDialogTitle>Release lease {lease.ip}?</AlertDialogTitle>
+                              <AlertDialogDescription>
+                                This will revoke the active lease for {lease.mac} and return the address to the pool.
+                              </AlertDialogDescription>
+                            </AlertDialogHeader>
+                            <AlertDialogFooter>
+                              <AlertDialogCancel>Cancel</AlertDialogCancel>
+                              <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void release(lease.ip)}>
+                                Release lease
+                              </AlertDialogAction>
+                            </AlertDialogFooter>
+                          </AlertDialogContent>
+                        </AlertDialog>
                       </div>
                     </td>
                   </tr>

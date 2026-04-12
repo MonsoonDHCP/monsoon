@@ -1,9 +1,16 @@
 import { Filter, MapPinned, Search, Waypoints } from "lucide-react"
-import { useEffect, useMemo, useState } from "react"
+import { useMemo, useState } from "react"
 
 import { useDashboard } from "@/app/dashboard-context"
+import { EmptyState } from "@/components/shared/empty-state"
+import { ErrorState } from "@/components/shared/error-state"
+import { RecordListSkeleton } from "@/components/shared/record-list-skeleton"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import { useAddressesQuery } from "@/hooks/use-dashboard-queries"
 import type { AddressRecord, AddressState } from "@/types/api"
 
 const stateClass: Record<AddressState, string> = {
@@ -22,36 +29,14 @@ function stateBadge(state: AddressState): "success" | "warning" | "danger" | "de
 }
 
 export function AddressesPage() {
-  const { subnets, loadAddressesForSubnet } = useDashboard()
-  const [rows, setRows] = useState<AddressRecord[]>([])
+  const { subnets, settings } = useDashboard()
   const [selectedSubnet, setSelectedSubnet] = useState("all")
   const [query, setQuery] = useState("")
-
-  useEffect(() => {
-    let alive = true
-    const subnet = selectedSubnet === "all" ? undefined : selectedSubnet
-
-    const refresh = () => {
-      void loadAddressesForSubnet(subnet)
-        .then((items) => {
-          if (alive) {
-            setRows(items)
-          }
-        })
-        .catch(() => {
-          if (alive) {
-            setRows([])
-          }
-        })
-    }
-
-    refresh()
-    const timer = setInterval(refresh, 10000)
-    return () => {
-      alive = false
-      clearInterval(timer)
-    }
-  }, [selectedSubnet, loadAddressesForSubnet])
+  const subnet = selectedSubnet === "all" ? undefined : selectedSubnet
+  const addressesQuery = useAddressesQuery(subnet, {
+    refetchInterval: settings?.auto_refresh ? 10_000 : false,
+  })
+  const rows = addressesQuery.data ?? []
 
   const filtered = useMemo(() => {
     const needle = query.toLowerCase().trim()
@@ -109,28 +94,30 @@ export function AddressesPage() {
           <CardDescription>Switch subnet and search by IP, MAC, hostname or state.</CardDescription>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-[280px_1fr]">
-          <select
-            value={selectedSubnet}
-            onChange={(event) => setSelectedSubnet(event.target.value)}
-            className="h-10 rounded-xl border border-border/70 bg-background px-3 text-sm"
-          >
-            <option value="all">All subnets</option>
-            {subnets
-              .filter((subnet) => subnet.cidr !== "unassigned")
-              .map((subnet) => (
-                <option key={subnet.cidr} value={subnet.cidr}>
-                  {subnet.cidr} {subnet.name ? `| ${subnet.name}` : ""}
-                </option>
-              ))}
-          </select>
+          <Select value={selectedSubnet} onValueChange={setSelectedSubnet}>
+            <SelectTrigger aria-label="Select subnet scope">
+              <SelectValue placeholder="All subnets" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All subnets</SelectItem>
+              {subnets
+                .filter((subnet) => subnet.cidr !== "unassigned")
+                .map((subnet) => (
+                  <SelectItem key={subnet.cidr} value={subnet.cidr}>
+                    {subnet.cidr} {subnet.name ? `| ${subnet.name}` : ""}
+                  </SelectItem>
+                ))}
+            </SelectContent>
+          </Select>
 
           <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-muted/30 px-3">
             <Search className="size-4 text-muted-foreground" />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-10 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               placeholder="Search records..."
+              aria-label="Search address records"
             />
           </div>
         </CardContent>
@@ -146,7 +133,21 @@ export function AddressesPage() {
             <CardDescription>First 256 records rendered as a compact occupancy map.</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="grid gap-1" style={{ gridTemplateColumns: "repeat(16, minmax(0, 1fr))" }}>
+            {addressesQuery.isPending ? (
+              <div className="grid grid-cols-[repeat(16,minmax(0,1fr))] gap-1">
+                {Array.from({ length: 96 }).map((_, index) => (
+                  <Skeleton key={index} className="h-4 rounded-[4px]" />
+                ))}
+              </div>
+            ) : null}
+            {mapItems.length === 0 ? (
+              <EmptyState
+                icon={MapPinned}
+                title="No address map data"
+                description="Choose a populated subnet or wait for address telemetry to arrive."
+              />
+            ) : null}
+            <div className="grid grid-cols-[repeat(16,minmax(0,1fr))] gap-1">
               {mapItems.map((item) => (
                 <div
                   key={`${item.ip}-${item.state}`}
@@ -165,12 +166,28 @@ export function AddressesPage() {
               Address records
             </CardTitle>
             <CardDescription>{filtered.length} records in current scope.</CardDescription>
-          </CardHeader>
+        </CardHeader>
           <CardContent className="max-h-[620px] overflow-auto">
             <div className="space-y-2">
-              {filtered.map((item: AddressRecord) => (
-                <div key={`${item.ip}-${item.mac ?? "na"}`} className="rounded-xl border border-border/70 bg-background/60 p-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+            {addressesQuery.isPending ? <RecordListSkeleton rows={6} /> : null}
+            {addressesQuery.error ? (
+              <ErrorState
+                title="Unable to load addresses"
+                description="Address telemetry could not be loaded for the selected subnet scope."
+                className="p-4"
+                onAction={() => void addressesQuery.refetch()}
+              />
+            ) : null}
+            {filtered.length === 0 ? (
+              <EmptyState
+                icon={Waypoints}
+                title="No address records"
+                description="No address data is available for the current scope and search filter."
+              />
+            ) : null}
+            {!addressesQuery.isPending ? filtered.map((item: AddressRecord) => (
+              <div key={`${item.ip}-${item.mac ?? "na"}`} className="rounded-xl border border-border/70 bg-background/60 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                     <p className="font-mono text-xs text-cyan-300">{item.ip}</p>
                     <Badge variant={stateBadge(item.state)} className="capitalize">
                       {item.state}
@@ -181,8 +198,7 @@ export function AddressesPage() {
                     MAC: {item.mac || "-"} | subnet: {item.subnet_cidr || "-"} | source: {item.source || "-"}
                   </p>
                 </div>
-              ))}
-              {filtered.length === 0 && <p className="text-sm text-muted-foreground">No address data available for this scope.</p>}
+              )) : null}
             </div>
           </CardContent>
         </Card>

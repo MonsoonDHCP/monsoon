@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/monsoondhcp/monsoon/internal/lease"
@@ -73,13 +74,44 @@ func (m *Manager) requestSnapshot(ctx context.Context) error {
 	if resp.Type != "snapshot" {
 		return nil
 	}
-	for _, item := range resp.Leases {
+	if err := m.applySnapshot(ctx, resp.Leases); err != nil {
+		return err
+	}
+	m.updateSyncLag(time.Since(resp.Timestamp))
+	m.markSnapshotDone()
+	return nil
+}
+
+func (m *Manager) applySnapshot(ctx context.Context, leases []lease.Lease) error {
+	if m.store == nil {
+		return nil
+	}
+	desired := make(map[string]lease.Lease, len(leases))
+	for _, item := range leases {
+		ip := strings.TrimSpace(item.IP)
+		if ip == "" {
+			continue
+		}
+		item.IP = ip
+		desired[ip] = item
+	}
+	for _, item := range desired {
 		if err := m.store.Upsert(ctx, item); err != nil {
 			return err
 		}
 	}
-	m.updateSyncLag(time.Since(resp.Timestamp))
-	m.markSnapshotDone()
+	existing, err := m.store.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	for _, item := range existing {
+		if _, ok := desired[strings.TrimSpace(item.IP)]; ok {
+			continue
+		}
+		if err := m.store.Delete(ctx, item.IP); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

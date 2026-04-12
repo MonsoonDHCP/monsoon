@@ -1,5 +1,14 @@
 # Monsoon — DHCP + IPAM Server
 
+> Status note (2026-04-12): this document is broader than the current shipped build and should be read as product intent, not an exact implementation contract.
+> Current build reality:
+> - Auth: `local` only. LDAP config exists in schema/plans but is not implemented.
+> - Sessions: persisted on the local node; not shared across HA peers.
+> - Discovery: active scan orchestration plus lease/reservation-aware conflict reporting. True passive rogue-DHCP sensing is not implemented.
+> - Storage: WAL + snapshot backed engine with sorted in-memory structures, not the fully realized page-backed B+Tree described below.
+> - Restore: available in both CLI and REST (`POST /api/v1/system/restore`).
+> - Config update: `PUT /api/v1/system/config` now merges into the current config instead of replacing omitted fields with defaults.
+
 ## Project Identity
 
 | Field | Value |
@@ -663,7 +672,7 @@ Base URL: `http://localhost:8067/api/v1`
 | POST | `/discovery/scan` | Trigger manual scan |
 | GET | `/discovery/results` | Latest scan results |
 | GET | `/discovery/conflicts` | Detected conflicts |
-| GET | `/discovery/rogue-dhcp` | Rogue DHCP servers |
+| GET | `/discovery/rogue` | Persisted rogue findings, if any |
 
 #### 6.1.7 Audit Endpoints
 
@@ -1080,13 +1089,13 @@ dashboard:
 # Authentication
 auth:
   enabled: true
-  type: "local"                 # local, ldap
+  type: "local"                 # current build supports only local
   
   local:
     admin_username: "admin"
     admin_password_hash: ""     # Set on first run
     
-  ldap:
+  ldap:                         # planned schema; not implemented in current build
     server: "ldap://ldap.office.local:389"
     base_dn: "dc=office,dc=local"
     bind_dn: "cn=monsoon,ou=services,dc=office,dc=local"
@@ -1106,7 +1115,7 @@ auth:
 # High Availability
 ha:
   enabled: false
-  mode: "active-passive"        # active-passive, load-sharing
+  mode: "active-passive"        # current build effectively targets basic active-passive
   peer_address: "10.0.1.6:8068"
   heartbeat_interval: "1s"
   failover_timeout: "10s"
@@ -1140,7 +1149,7 @@ Flags:
   -c, --config string    Configuration file path (default "/etc/monsoon/monsoon.yaml")
   -d, --data-dir string  Data directory (default "/var/lib/monsoon")
   -v, --version          Print version and exit
-      --init             Initialize configuration and admin password
+      --init             Initialize configuration file
       --check-config     Validate configuration and exit
       --export-config    Export current configuration to stdout
       --backup           Create backup and exit

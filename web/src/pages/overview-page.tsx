@@ -1,8 +1,13 @@
 import { Activity, CircleGauge, Network, Workflow } from "lucide-react"
 
 import { useDashboard } from "@/app/dashboard-context"
+import { ErrorState } from "@/components/shared/error-state"
+import { ProgressBar } from "@/components/shared/progress-bar"
+import { RecordListSkeleton } from "@/components/shared/record-list-skeleton"
+import { StatsGridSkeleton } from "@/components/shared/stats-grid-skeleton"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
 
 function metricColor(value: number) {
   if (value >= 80) return "danger"
@@ -44,6 +49,9 @@ export function OverviewPage() {
         <Badge variant={health?.status === "healthy" ? "success" : "warning"}>{health?.status ?? "unknown"}</Badge>
       </div>
 
+      {loading ? <StatsGridSkeleton /> : null}
+
+      {!loading ? (
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Card>
           <CardHeader className="pb-2">
@@ -89,7 +97,25 @@ export function OverviewPage() {
           </CardContent>
         </Card>
       </div>
+      ) : null}
 
+      {loading ? (
+        <div className="grid gap-4 xl:grid-cols-2">
+          <div className="rounded-2xl border border-border/70 bg-card p-6 shadow-sm">
+            <Skeleton className="h-5 w-32" />
+            <Skeleton className="mt-2 h-4 w-56" />
+            <Skeleton className="mt-6 h-3 w-full" />
+            <div className="mt-3 flex justify-between">
+              <Skeleton className="h-3 w-8" />
+              <Skeleton className="h-5 w-14 rounded-full" />
+              <Skeleton className="h-3 w-8" />
+            </div>
+          </div>
+          <RecordListSkeleton rows={6} />
+        </div>
+      ) : null}
+
+      {!loading ? (
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
           <CardHeader>
@@ -97,12 +123,11 @@ export function OverviewPage() {
             <CardDescription>Visual pressure indicator for current subnet pool.</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-3 rounded-full bg-muted">
-              <div
-                className="h-full rounded-full bg-gradient-to-r from-cyan-500 via-teal-400 to-amber-300 transition-all"
-                style={{ width: `${subnetUtilization}%` }}
-              />
-            </div>
+            <ProgressBar
+              value={subnetUtilization}
+              label="Subnet capacity pulse"
+              variant={metricColor(subnetUtilization) as "success" | "warning" | "danger"}
+            />
             <div className="mt-3 flex justify-between text-xs text-muted-foreground">
               <span>0%</span>
               <Badge variant={metricColor(subnetUtilization) as "success" | "warning" | "danger"}>{subnetUtilization}%</Badge>
@@ -187,17 +212,9 @@ export function OverviewPage() {
           </CardContent>
         </Card>
       </div>
+      ) : null}
 
-      {error && (
-        <Card className="border-rose-500/40 bg-rose-500/10">
-          <CardHeader>
-            <CardTitle className="text-rose-200">API unreachable</CardTitle>
-            <CardDescription className="text-rose-100/80">{error}</CardDescription>
-          </CardHeader>
-        </Card>
-      )}
-
-      {loading && <p className="text-sm text-muted-foreground">Loading telemetry...</p>}
+      {error ? <ErrorState title="API unreachable" description={error} /> : null}
     </div>
   )
 }

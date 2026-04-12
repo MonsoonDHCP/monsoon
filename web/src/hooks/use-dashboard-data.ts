@@ -1,49 +1,54 @@
+import { useQueryClient } from "@tanstack/react-query"
 import { useCallback, useEffect, useMemo, useState } from "react"
+import { toast } from "sonner"
 
 import {
   isApiError,
   bootstrapAuth,
   createAuthToken,
   convertLeaseToReservation,
-  fetchAuditEntries,
-  fetchAuthTokens,
+  createSystemBackup,
   deleteReservation,
-  fetchAddresses,
-  fetchCurrentUser,
   deleteSubnet,
-  fetchDiscoveryConflicts,
-  fetchDiscoveryProgress,
-  fetchDiscoveryResults,
-  fetchDiscoveryRogueServers,
-  fetchDiscoveryStatus,
-  fetchHealth,
-  fetchSystemBackups,
-  fetchSystemConfig,
-  fetchSystemInfo,
-  fetchLeases,
-  fetchReservations,
-  fetchRawSubnets,
-  fetchSubnets,
-  fetchUISettings,
   login,
   logout,
   releaseLease,
+  restoreSystemBackup,
   revokeAuthToken,
-  triggerHAFailover,
   triggerDiscoveryScan,
+  triggerHAFailover,
   updateSystemConfig,
   updateUISettings,
   upsertReservation,
   upsertSubnet,
-  createSystemBackup,
-  restoreSystemBackup,
 } from "@/lib/api"
 import { connectLiveSocket, type LiveEvent } from "@/lib/ws"
+import {
+  dashboardQueryKeys,
+  invalidateDashboardQueries,
+  useAuditEntriesQuery,
+  useAuthTokensQuery,
+  useBackupsQuery,
+  useCurrentUserQuery,
+  useDiscoveryConflictsQuery,
+  useDiscoveryProgressQuery,
+  useDiscoveryResultsQuery,
+  useDiscoveryStatusQuery,
+  useHealthQuery,
+  useLeasesQuery,
+  useRawSubnetsQuery,
+  useReservationsQuery,
+  useRogueServersQuery,
+  useSubnetsQuery,
+  useSystemConfigQuery,
+  useSystemInfoQuery,
+  useUISettingsQuery,
+} from "@/hooks/use-dashboard-queries"
+import { useDashboardUIStore, type DashboardNotification } from "@/stores/dashboard-ui-store"
 import type {
+  AuditEntry,
   AuthIdentity,
   AuthToken,
-  AuditEntry,
-  AddressRecord,
   DiscoveryStatus,
   DiscoveryConflict,
   DiscoveryProgress,
@@ -70,7 +75,6 @@ type DashboardState = {
   leases: Lease[]
   subnets: SubnetSummary[]
   subnetRecords: Subnet[]
-  addresses: AddressRecord[]
   reservations: Reservation[]
   discovery: DiscoveryStatus | null
   discoveryResults: DiscoveryResult[]
@@ -87,7 +91,8 @@ type DashboardState = {
   isAdmin: boolean
   loading: boolean
   error: string | null
-  notifications: { id: string; type: string; message: string; at: string }[]
+  liveConnection: "websocket" | "sse" | "offline"
+  notifications: DashboardNotification[]
   reload: () => Promise<void>
   release: (ip: string) => Promise<void>
   reserveLease: (ip: string) => Promise<void>
@@ -97,7 +102,6 @@ type DashboardState = {
   removeSubnet: (cidr: string) => Promise<void>
   saveReservation: (payload: UpsertReservationPayload) => Promise<void>
   removeReservation: (mac: string) => Promise<void>
-  loadAddressesForSubnet: (subnetCIDR?: string) => Promise<AddressRecord[]>
   loginWithPassword: (username: string, password: string) => Promise<void>
   bootstrapAndLogin: (username: string, password: string) => Promise<void>
   logoutCurrentUser: () => Promise<void>
@@ -112,319 +116,388 @@ type DashboardState = {
   requestManualFailover: (reason: string) => Promise<void>
 }
 
+function getFirstNonAuthError(errors: Array<unknown>) {
+  for (const error of errors) {
+    if (isApiError(error) && error.status === 401) {
+      continue
+    }
+    if (error instanceof Error) {
+      return error.message
+    }
+  }
+  return null
+}
+
 export function useDashboardData(): DashboardState {
-  const [health, setHealth] = useState<HealthResponse | null>(null)
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
-  const [systemConfig, setSystemConfig] = useState<SystemConfig | null>(null)
-  const [backups, setBackups] = useState<SystemBackup[]>([])
-  const [leases, setLeases] = useState<Lease[]>([])
-  const [subnets, setSubnets] = useState<SubnetSummary[]>([])
-  const [subnetRecords, setSubnetRecords] = useState<Subnet[]>([])
-  const [addresses, setAddresses] = useState<AddressRecord[]>([])
-  const [reservations, setReservations] = useState<Reservation[]>([])
-  const [discovery, setDiscovery] = useState<DiscoveryStatus | null>(null)
-  const [discoveryResults, setDiscoveryResults] = useState<DiscoveryResult[]>([])
-  const [discoveryProgress, setDiscoveryProgress] = useState<DiscoveryProgress | null>(null)
-  const [discoveryConflicts, setDiscoveryConflicts] = useState<DiscoveryConflict[]>([])
-  const [rogueServers, setRogueServers] = useState<RogueServer[]>([])
-  const [auditEntries, setAuditEntries] = useState<AuditEntry[]>([])
-  const [settings, setSettings] = useState<UISettings | null>(null)
-  const [currentUser, setCurrentUser] = useState<AuthIdentity | null>(null)
-  const [authTokens, setAuthTokens] = useState<AuthToken[]>([])
-  const [tokenSecret, setTokenSecret] = useState<string | null>(null)
+  const queryClient = useQueryClient()
   const [authRequired, setAuthRequired] = useState(false)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [notifications, setNotifications] = useState<{ id: string; type: string; message: string; at: string }[]>([])
+  const [liveConnection, setLiveConnection] = useState<"websocket" | "sse" | "offline">("offline")
+
+  const notifications = useDashboardUIStore((state) => state.notifications)
+  const tokenSecret = useDashboardUIStore((state) => state.tokenSecret)
+  const pushNotification = useDashboardUIStore((state) => state.pushNotification)
+  const clearNotifications = useDashboardUIStore((state) => state.clearNotifications)
+  const setTokenSecret = useDashboardUIStore((state) => state.setTokenSecret)
+
+  const protectedEnabled = !authRequired
+
+  const healthQuery = useHealthQuery()
+  const systemInfoQuery = useSystemInfoQuery({ enabled: protectedEnabled })
+  const systemConfigQuery = useSystemConfigQuery({ enabled: protectedEnabled })
+  const backupsQuery = useBackupsQuery({ enabled: protectedEnabled })
+  const leasesQuery = useLeasesQuery({ enabled: protectedEnabled })
+  const subnetsQuery = useSubnetsQuery({ enabled: protectedEnabled })
+  const rawSubnetsQuery = useRawSubnetsQuery({ enabled: protectedEnabled })
+  const reservationsQuery = useReservationsQuery({ enabled: protectedEnabled })
+  const discoveryStatusQuery = useDiscoveryStatusQuery({ enabled: protectedEnabled })
+  const discoveryProgressQuery = useDiscoveryProgressQuery({ enabled: protectedEnabled })
+  const discoveryResultsQuery = useDiscoveryResultsQuery(30, { enabled: protectedEnabled })
+  const discoveryConflictsQuery = useDiscoveryConflictsQuery({ enabled: protectedEnabled })
+  const rogueServersQuery = useRogueServersQuery({ enabled: protectedEnabled })
+  const settingsQuery = useUISettingsQuery({ enabled: protectedEnabled })
+  const auditEntriesQuery = useAuditEntriesQuery(200, { enabled: protectedEnabled })
+  const currentUserQuery = useCurrentUserQuery({ enabled: protectedEnabled })
+  const currentUser = authRequired ? null : (currentUserQuery.data ?? null)
+  const authTokensQuery = useAuthTokensQuery(Boolean(protectedEnabled && currentUser?.role === "admin"))
+
+  const protectedErrors = [
+    systemInfoQuery.error,
+    systemConfigQuery.error,
+    backupsQuery.error,
+    leasesQuery.error,
+    subnetsQuery.error,
+    rawSubnetsQuery.error,
+    reservationsQuery.error,
+    discoveryStatusQuery.error,
+    discoveryProgressQuery.error,
+    discoveryResultsQuery.error,
+    discoveryConflictsQuery.error,
+    rogueServersQuery.error,
+    settingsQuery.error,
+    auditEntriesQuery.error,
+  ]
+
+  useEffect(() => {
+    if (protectedErrors.some((error) => isApiError(error) && error.status === 401)) {
+      setAuthRequired(true)
+      setTokenSecret(null)
+      return
+    }
+    if (
+      systemInfoQuery.data ||
+      systemConfigQuery.data ||
+      backupsQuery.data ||
+      leasesQuery.data ||
+      subnetsQuery.data ||
+      rawSubnetsQuery.data ||
+      reservationsQuery.data ||
+      discoveryStatusQuery.data ||
+      settingsQuery.data
+    ) {
+      setAuthRequired(false)
+    }
+  }, [
+    backupsQuery.data,
+    discoveryStatusQuery.data,
+    leasesQuery.data,
+    rawSubnetsQuery.data,
+    reservationsQuery.data,
+    setTokenSecret,
+    settingsQuery.data,
+    subnetsQuery.data,
+    systemConfigQuery.data,
+    systemInfoQuery.data,
+    protectedErrors,
+  ])
 
   const load = useCallback(async () => {
+    await invalidateDashboardQueries(queryClient)
+  }, [queryClient])
+
+  const withToast = useCallback(async <T,>(work: () => Promise<T>, successMessage: string) => {
     try {
-      setLoading(true)
-      setError(null)
-      const healthData = await fetchHealth()
-      setHealth(healthData)
-
-      const [systemInfoData, systemConfigData, backupsData, leaseData, subnetData, subnetRawData, addressData, reservationData, discoveryData, discoveryProgressData, discoveryResultsData, discoveryConflictsData, rogueServersData, settingsData, auditData] = await Promise.all([
-        fetchSystemInfo(),
-        fetchSystemConfig(),
-        fetchSystemBackups(),
-        fetchLeases(),
-        fetchSubnets(),
-        fetchRawSubnets(),
-        fetchAddresses(),
-        fetchReservations(),
-        fetchDiscoveryStatus(),
-        fetchDiscoveryProgress(),
-        fetchDiscoveryResults(30),
-        fetchDiscoveryConflicts(),
-        fetchDiscoveryRogueServers(),
-        fetchUISettings(),
-        fetchAuditEntries({ limit: 200 }),
-      ])
-      setLeases(leaseData)
-      setSystemInfo(systemInfoData)
-      setSystemConfig(systemConfigData)
-      setBackups(backupsData)
-      setSubnets(subnetData)
-      setSubnetRecords(subnetRawData)
-      setAddresses(addressData)
-      setReservations(reservationData)
-      setDiscovery(discoveryData)
-      setDiscoveryProgress(discoveryProgressData)
-      setDiscoveryResults(discoveryResultsData)
-      setDiscoveryConflicts(discoveryConflictsData)
-      setRogueServers(rogueServersData)
-      setSettings(settingsData)
-      setAuditEntries(auditData)
-      setAuthRequired(false)
-
-      try {
-        const me = await fetchCurrentUser()
-        setCurrentUser(me)
-        if (me.role === "admin") {
-          const tokens = await fetchAuthTokens()
-          setAuthTokens(tokens)
-        } else {
-          setAuthTokens([])
-        }
-      } catch {
-        setCurrentUser(null)
-        setAuthTokens([])
-      }
-    } catch (err) {
-      if (isApiError(err) && err.status === 401) {
-        setAuthRequired(true)
-        setCurrentUser(null)
-        setAuthTokens([])
-        setLeases([])
-        setSystemInfo(null)
-        setSystemConfig(null)
-        setBackups([])
-        setSubnets([])
-        setSubnetRecords([])
-        setAddresses([])
-        setReservations([])
-        setDiscovery(null)
-        setDiscoveryProgress(null)
-        setDiscoveryResults([])
-        setDiscoveryConflicts([])
-        setRogueServers([])
-        setAuditEntries([])
-        setSettings(null)
-        setNotifications([])
-        setError("Authentication required. Please sign in.")
-      } else {
-        const message = err instanceof Error ? err.message : "Unknown error"
-        setError(message)
-      }
-    } finally {
-      setLoading(false)
+      const result = await work()
+      toast.success(successMessage)
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Request failed"
+      toast.error(message)
+      throw error
     }
   }, [])
 
   const release = useCallback(
     async (ip: string) => {
-      await releaseLease(ip)
-      await load()
+      await withToast(
+        async () => {
+          await releaseLease(ip)
+          await load()
+        },
+        `Lease released for ${ip}`,
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const triggerScan = useCallback(async () => {
-    await triggerDiscoveryScan()
-    await load()
-  }, [load])
+    await withToast(
+      async () => {
+        await triggerDiscoveryScan()
+        await load()
+      },
+      "Discovery scan queued",
+    )
+  }, [load, withToast])
 
   const reserveLease = useCallback(
     async (ip: string) => {
-      await convertLeaseToReservation(ip)
-      await load()
+      await withToast(
+        async () => {
+          await convertLeaseToReservation(ip)
+          await load()
+        },
+        `Lease converted to reservation for ${ip}`,
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const saveSettings = useCallback(
     async (next: UISettings) => {
-      const saved = await updateUISettings(next)
-      setSettings(saved)
+      await withToast(
+        async () => {
+          const saved = await updateUISettings(next)
+          queryClient.setQueryData(dashboardQueryKeys.settings, saved)
+        },
+        "Preferences saved",
+      )
     },
-    [setSettings],
+    [queryClient, withToast],
   )
 
   const saveSubnet = useCallback(
     async (payload: UpsertSubnetPayload) => {
-      await upsertSubnet(payload)
-      await load()
+      await withToast(
+        async () => {
+          await upsertSubnet(payload)
+          await load()
+        },
+        `Subnet saved: ${payload.cidr}`,
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const removeSubnet = useCallback(
     async (cidr: string) => {
-      await deleteSubnet(cidr)
-      await load()
+      await withToast(
+        async () => {
+          await deleteSubnet(cidr)
+          await load()
+        },
+        `Subnet deleted: ${cidr}`,
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const saveReservation = useCallback(
     async (payload: UpsertReservationPayload) => {
-      await upsertReservation(payload)
-      await load()
+      await withToast(
+        async () => {
+          await upsertReservation(payload)
+          await load()
+        },
+        `Reservation saved: ${payload.ip}`,
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const removeReservation = useCallback(
     async (mac: string) => {
-      await deleteReservation(mac)
-      await load()
+      await withToast(
+        async () => {
+          await deleteReservation(mac)
+          await load()
+        },
+        `Reservation deleted: ${mac}`,
+      )
     },
-    [load],
+    [load, withToast],
   )
-
-  const loadAddressesForSubnet = useCallback(async (subnetCIDR?: string) => {
-    const rows = await fetchAddresses(subnetCIDR)
-    setAddresses(rows)
-    return rows
-  }, [])
 
   const loginWithPassword = useCallback(
     async (username: string, password: string) => {
-      setError(null)
-      try {
-        await login(username, password)
-        await load()
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Login failed"
-        setError(message)
-        throw err
-      }
+      await withToast(
+        async () => {
+          await login(username, password)
+          setAuthRequired(false)
+          await load()
+        },
+        "Signed in",
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const bootstrapAndLogin = useCallback(
     async (username: string, password: string) => {
-      setError(null)
-      try {
-        await bootstrapAuth(username, password)
-        await login(username, password)
-        await load()
-      } catch (err) {
-        const message = err instanceof Error ? err.message : "Bootstrap failed"
-        setError(message)
-        throw err
-      }
+      await withToast(
+        async () => {
+          await bootstrapAuth(username, password)
+          await login(username, password)
+          setAuthRequired(false)
+          await load()
+        },
+        "Administrator bootstrapped",
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const logoutCurrentUser = useCallback(async () => {
-    await logout()
-    await load()
-    setTokenSecret(null)
-  }, [load])
+    await withToast(
+      async () => {
+        await logout()
+        setTokenSecret(null)
+        setAuthRequired(true)
+        queryClient.setQueryData(dashboardQueryKeys.currentUser, null)
+        queryClient.setQueryData(dashboardQueryKeys.authTokens, [])
+        await load()
+      },
+      "Signed out",
+    )
+  }, [load, queryClient, setTokenSecret, withToast])
 
   const createToken = useCallback(
     async (payload: { name: string; role: string; expires_in_hours?: number; description?: string }) => {
-      const result = await createAuthToken(payload)
-      setTokenSecret(result.secret)
-      await load()
+      await withToast(
+        async () => {
+          const result = await createAuthToken(payload)
+          setTokenSecret(result.secret)
+          await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.authTokens })
+        },
+        "API token created",
+      )
     },
-    [load],
+    [queryClient, setTokenSecret, withToast],
   )
 
   const revokeToken = useCallback(
     async (id: string) => {
-      await revokeAuthToken(id)
-      await load()
+      await withToast(
+        async () => {
+          await revokeAuthToken(id)
+          await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.authTokens })
+        },
+        "API token revoked",
+      )
     },
-    [load],
+    [queryClient, withToast],
   )
 
   const refreshBackups = useCallback(async () => {
-    const rows = await fetchSystemBackups()
-    setBackups(rows)
-  }, [])
+    await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.backups })
+  }, [queryClient])
 
   const refreshSystemConfig = useCallback(async () => {
-    const cfg = await fetchSystemConfig()
-    setSystemConfig(cfg)
-  }, [])
+    await queryClient.invalidateQueries({ queryKey: dashboardQueryKeys.systemConfig })
+  }, [queryClient])
 
-  const saveSystemConfig = useCallback(async (payload: SystemConfig) => {
-    const updated = await updateSystemConfig(payload)
-    setSystemConfig(updated)
-  }, [])
+  const saveSystemConfig = useCallback(
+    async (payload: SystemConfig) => {
+      await withToast(
+        async () => {
+          const updated = await updateSystemConfig(payload)
+          queryClient.setQueryData(dashboardQueryKeys.systemConfig, updated)
+        },
+        "Runtime config updated",
+      )
+    },
+    [queryClient, withToast],
+  )
 
   const createBackup = useCallback(async () => {
-    await createSystemBackup()
-    await refreshBackups()
-  }, [refreshBackups])
+    await withToast(
+      async () => {
+        await createSystemBackup()
+        await refreshBackups()
+      },
+      "Backup created",
+    )
+  }, [refreshBackups, withToast])
 
   const restoreBackup = useCallback(
     async (payload: { name?: string; path?: string }) => {
-      await restoreSystemBackup(payload)
-      await load()
+      await withToast(
+        async () => {
+          await restoreSystemBackup(payload)
+          await load()
+        },
+        "Backup restored",
+      )
     },
-    [load],
+    [load, withToast],
   )
 
   const requestManualFailover = useCallback(
     async (reason: string) => {
-      await triggerHAFailover(reason)
-      await load()
+      await withToast(
+        async () => {
+          await triggerHAFailover(reason)
+          await load()
+        },
+        "Manual failover requested",
+      )
     },
-    [load],
+    [load, withToast],
   )
 
-  const clearNotifications = useCallback(() => {
-    setNotifications([])
-  }, [])
-
-  const pushNotification = useCallback((type: string, payload?: Record<string, unknown>) => {
-    const at = new Date().toISOString()
-    const suffix =
-      typeof payload?.ip === "string"
-        ? ` (${payload.ip})`
-        : typeof payload?.cidr === "string"
-          ? ` (${payload.cidr})`
-          : typeof payload?.scan_id === "string"
-            ? ` (${payload.scan_id})`
-            : ""
-    const message = `${type}${suffix}`
-
-    setNotifications((prev) => {
-      const next = [{ id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, type, message, at }, ...prev]
-      return next.slice(0, 40)
-    })
-  }, [])
+  const pushLiveNotification = useCallback(
+    (type: string, payload?: Record<string, unknown>) => {
+      const suffix =
+        typeof payload?.ip === "string"
+          ? ` (${payload.ip})`
+          : typeof payload?.cidr === "string"
+            ? ` (${payload.cidr})`
+            : typeof payload?.scan_id === "string"
+              ? ` (${payload.scan_id})`
+              : ""
+      pushNotification({
+        type,
+        message: `${type}${suffix}`,
+        at: new Date().toISOString(),
+      })
+    },
+    [pushNotification],
+  )
 
   const handleLiveEvent = useCallback(
     (event: LiveEvent) => {
-      pushNotification(event.type, event.data)
+      pushLiveNotification(event.type, event.data)
     },
-    [pushNotification],
+    [pushLiveNotification],
   )
 
   useEffect(() => {
     let timer: ReturnType<typeof setInterval> | null = null
     void load()
-    if (!authRequired && (settings?.auto_refresh ?? true)) {
+    if (!authRequired && (settingsQuery.data?.auto_refresh ?? true)) {
       timer = setInterval(() => {
         void load()
-      }, 15000)
+      }, 15_000)
     }
     return () => {
       if (timer) {
         clearInterval(timer)
       }
     }
-  }, [authRequired, load, settings?.auto_refresh])
+  }, [authRequired, load, settingsQuery.data?.auto_refresh])
 
   useEffect(() => {
     if (authRequired) {
+      setLiveConnection("offline")
       return
     }
     let reloadTimer: ReturnType<typeof setTimeout> | null = null
@@ -446,6 +519,7 @@ export function useDashboardData(): DashboardState {
         return
       }
       fallbackActivated = true
+      setLiveConnection("sse")
       fallbackSource = new EventSource("/api/v1/events")
       const parsePayload = (evt: Event): Record<string, unknown> => {
         try {
@@ -503,22 +577,30 @@ export function useDashboardData(): DashboardState {
       fallbackSource.addEventListener("settings.ui_updated", handlers.settingsUpdated)
       fallbackSource.addEventListener("ha.role_changed", handlers.haRoleChanged)
       fallbackSource.addEventListener("ha.failover_requested", handlers.haFailoverRequested)
+      fallbackSource.onerror = () => {
+        setLiveConnection("offline")
+      }
     }
 
     let opened = false
     const socket = connectLiveSocket({
       onOpen: () => {
         opened = true
+        setLiveConnection("websocket")
       },
       onClose: () => {
         if (!opened) {
           activateSSEFallback()
+          return
         }
+        setLiveConnection("offline")
       },
       onError: () => {
         if (!opened) {
           activateSSEFallback()
+          return
         }
+        setLiveConnection("offline")
       },
       onEvent: (event) => {
         handleLiveEvent(event)
@@ -529,93 +611,69 @@ export function useDashboardData(): DashboardState {
     return () => {
       socket.close()
       fallbackSource?.close()
+      setLiveConnection("offline")
       if (reloadTimer) {
         clearTimeout(reloadTimer)
       }
     }
   }, [authRequired, handleLiveEvent, load])
 
-  return useMemo(
-    () => {
-      const role = currentUser?.role ?? ""
-      const isAdmin = role === "admin"
-      const canMutate = !authRequired || role === "admin" || role === "operator"
+  const loading =
+    healthQuery.isPending ||
+    (!authRequired &&
+      [
+        systemInfoQuery,
+        systemConfigQuery,
+        backupsQuery,
+        leasesQuery,
+        subnetsQuery,
+        rawSubnetsQuery,
+        reservationsQuery,
+        discoveryStatusQuery,
+        discoveryProgressQuery,
+        discoveryResultsQuery,
+        discoveryConflictsQuery,
+        rogueServersQuery,
+        settingsQuery,
+        auditEntriesQuery,
+      ].some((query) => query.isPending))
 
-      return {
-        health,
-        systemInfo,
-        systemConfig,
-        backups,
-        leases,
-        subnets,
-        subnetRecords,
-        addresses,
-        reservations,
-        discovery,
-        discoveryResults,
-        discoveryProgress,
-        discoveryConflicts,
-        rogueServers,
-        auditEntries,
-        settings,
-        currentUser,
-        authTokens,
-        tokenSecret,
-        authRequired,
-        canMutate,
-        isAdmin,
-        loading,
-        error,
-        notifications,
-        reload: load,
-        release,
-        reserveLease,
-        triggerScan,
-        saveSettings,
-        saveSubnet,
-        removeSubnet,
-        saveReservation,
-        removeReservation,
-        loadAddressesForSubnet,
-        loginWithPassword,
-        bootstrapAndLogin,
-        logoutCurrentUser,
-        createToken,
-        revokeToken,
-        createBackup,
-        restoreBackup,
-        refreshBackups,
-        refreshSystemConfig,
-        clearNotifications,
-        saveSystemConfig,
-        requestManualFailover,
-      }
-    },
-    [
-      health,
-      systemInfo,
-      systemConfig,
-      backups,
-      leases,
-      subnets,
-      subnetRecords,
-      addresses,
-      reservations,
-      discovery,
-      discoveryResults,
-      discoveryProgress,
-      discoveryConflicts,
-      rogueServers,
-      auditEntries,
-      settings,
+  const error = authRequired
+    ? "Authentication required. Please sign in."
+    : getFirstNonAuthError([healthQuery.error, ...protectedErrors, authTokensQuery.error])
+
+  return useMemo(() => {
+    const role = currentUser?.role ?? ""
+    const isAdmin = role === "admin"
+    const canMutate = !authRequired || role === "admin" || role === "operator"
+
+    return {
+      health: healthQuery.data ?? null,
+      systemInfo: authRequired ? null : (systemInfoQuery.data ?? null),
+      systemConfig: authRequired ? null : (systemConfigQuery.data ?? null),
+      backups: authRequired ? [] : (backupsQuery.data ?? []),
+      leases: authRequired ? [] : (leasesQuery.data ?? []),
+      subnets: authRequired ? [] : (subnetsQuery.data ?? []),
+      subnetRecords: authRequired ? [] : (rawSubnetsQuery.data ?? []),
+      reservations: authRequired ? [] : (reservationsQuery.data ?? []),
+      discovery: authRequired ? null : (discoveryStatusQuery.data ?? null),
+      discoveryResults: authRequired ? [] : (discoveryResultsQuery.data ?? []),
+      discoveryProgress: authRequired ? null : (discoveryProgressQuery.data ?? null),
+      discoveryConflicts: authRequired ? [] : (discoveryConflictsQuery.data ?? []),
+      rogueServers: authRequired ? [] : (rogueServersQuery.data ?? []),
+      auditEntries: authRequired ? [] : (auditEntriesQuery.data ?? []),
+      settings: authRequired ? null : (settingsQuery.data ?? null),
       currentUser,
-      authTokens,
+      authTokens: authRequired ? [] : (authTokensQuery.data ?? []),
       tokenSecret,
       authRequired,
+      canMutate,
+      isAdmin,
       loading,
       error,
+      liveConnection,
       notifications,
-      load,
+      reload: load,
       release,
       reserveLease,
       triggerScan,
@@ -624,7 +682,6 @@ export function useDashboardData(): DashboardState {
       removeSubnet,
       saveReservation,
       removeReservation,
-      loadAddressesForSubnet,
       loginWithPassword,
       bootstrapAndLogin,
       logoutCurrentUser,
@@ -637,6 +694,51 @@ export function useDashboardData(): DashboardState {
       clearNotifications,
       saveSystemConfig,
       requestManualFailover,
-    ],
-  )
+    }
+  }, [
+    auditEntriesQuery.data,
+    authRequired,
+    authTokensQuery.data,
+    backupsQuery.data,
+    bootstrapAndLogin,
+    clearNotifications,
+    createBackup,
+    createToken,
+    currentUser,
+    discoveryConflictsQuery.data,
+    discoveryProgressQuery.data,
+    discoveryResultsQuery.data,
+    discoveryStatusQuery.data,
+    error,
+    healthQuery.data,
+    leasesQuery.data,
+    liveConnection,
+    load,
+    loading,
+    loginWithPassword,
+    logoutCurrentUser,
+    notifications,
+    rawSubnetsQuery.data,
+    refreshBackups,
+    refreshSystemConfig,
+    release,
+    removeReservation,
+    removeSubnet,
+    requestManualFailover,
+    reservationsQuery.data,
+    reserveLease,
+    restoreBackup,
+    revokeToken,
+    rogueServersQuery.data,
+    saveReservation,
+    saveSettings,
+    saveSubnet,
+    saveSystemConfig,
+    settingsQuery.data,
+    subnetsQuery.data,
+    systemConfigQuery.data,
+    systemInfoQuery.data,
+    tokenSecret,
+    triggerScan,
+  ])
 }

@@ -249,8 +249,8 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 			knownByIP[ip] = item
 		}
 	}
-	conflictMap := collectConflictMap(leases, reservations)
-	targets := e.buildTargets(subnets, knownByIP)
+	conflictMap := filterConflictMapForSubnets(collectConflictMap(leases, reservations), subnets)
+	targets := e.buildTargets(subnets, knownByIP, previousHosts)
 	e.updateProgress(func(p *Progress) {
 		p.Phase = "probing"
 		p.Total = len(targets)
@@ -473,6 +473,19 @@ func collectConflictMap(leases []lease.Lease, reservations []ipam.Reservation) m
 	return conflicts
 }
 
+func filterConflictMapForSubnets(conflicts map[string]map[string]struct{}, subnets []ipam.Subnet) map[string]map[string]struct{} {
+	if len(subnets) == 0 {
+		return conflicts
+	}
+	filtered := make(map[string]map[string]struct{}, len(conflicts))
+	for ip, macs := range conflicts {
+		if ipMatchesSubnets(ip, "", subnets) {
+			filtered[ip] = macs
+		}
+	}
+	return filtered
+}
+
 func filterKnownHostsForSubnets(known map[string]knownHost, subnets []ipam.Subnet) map[string]knownHost {
 	if len(subnets) == 0 {
 		return known
@@ -522,9 +535,12 @@ func ipMatchesSubnets(ip string, subnet string, subnets []ipam.Subnet) bool {
 	return false
 }
 
-func (e *Engine) buildTargets(subnets []ipam.Subnet, known map[string]knownHost) []string {
+func (e *Engine) buildTargets(subnets []ipam.Subnet, known map[string]knownHost, previous map[string]ObservedHost) []string {
 	targetSet := map[string]struct{}{}
 	for ip := range known {
+		targetSet[ip] = struct{}{}
+	}
+	for ip := range previous {
 		targetSet[ip] = struct{}{}
 	}
 

@@ -22,7 +22,7 @@ export function Topbar() {
     : "MO"
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border/70 bg-background/75 px-4 backdrop-blur-xl lg:px-6">
+    <header className="sticky top-0 z-[100] flex h-16 items-center justify-between border-b border-border/70 bg-background/80 px-4 backdrop-blur-xl transition-colors duration-150 sm:px-6 lg:px-8">
       <div className="flex items-center gap-2 lg:hidden">
         <Sheet>
           <SheetTrigger asChild>
@@ -52,7 +52,7 @@ export function Topbar() {
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="outline" size="icon" onClick={() => void reload()} disabled={loading}>
+              <Button variant="outline" size="icon" onClick={() => void reload()} disabled={loading} aria-label="Refresh dashboard data">
                 <RefreshCw className={loading ? "size-4 animate-spin" : "size-4"} />
               </Button>
             </TooltipTrigger>

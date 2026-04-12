@@ -57,6 +57,12 @@ class MockWebSocket {
 }
 
 describe("connectLiveSocket", () => {
+  function firstSocket() {
+    const socket = MockWebSocket.instances[0]
+    expect(socket).toBeDefined()
+    return socket as MockWebSocket
+  }
+
   beforeEach(() => {
     MockWebSocket.instances = []
     vi.useFakeTimers()
@@ -78,7 +84,7 @@ describe("connectLiveSocket", () => {
       onEvent,
     })
 
-    const socket = MockWebSocket.instances[0]
+    const socket = firstSocket()
     expect(socket.url).toBe(`${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`)
 
     socket.open()
@@ -102,7 +108,7 @@ describe("connectLiveSocket", () => {
       onEvent: vi.fn(),
     })
 
-    const socket = MockWebSocket.instances[0]
+    const socket = firstSocket()
     socket.message("{not-json")
     expect(onError).toHaveBeenCalledOnce()
 

@@ -1,52 +1,61 @@
-@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;700&display=swap");
 @import "tailwindcss";
 @import "tw-animate-css";
 
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: oklch(0.98 0.005 240);
-  --foreground: oklch(0.22 0.01 245);
-  --card: oklch(0.99 0.004 240);
-  --card-foreground: oklch(0.22 0.01 245);
-  --popover: oklch(0.99 0.004 240);
-  --popover-foreground: oklch(0.22 0.01 245);
-  --primary: oklch(0.58 0.17 222);
-  --primary-foreground: oklch(0.99 0.003 250);
-  --secondary: oklch(0.94 0.01 235);
-  --secondary-foreground: oklch(0.28 0.01 244);
-  --muted: oklch(0.95 0.008 240);
-  --muted-foreground: oklch(0.48 0.02 245);
-  --accent: oklch(0.92 0.04 205);
-  --accent-foreground: oklch(0.29 0.03 232);
-  --destructive: oklch(0.62 0.21 25);
-  --destructive-foreground: oklch(0.98 0.003 250);
-  --border: oklch(0.9 0.012 245);
-  --input: oklch(0.91 0.012 245);
-  --ring: oklch(0.62 0.17 222);
-  --radius: 1rem;
+  --background: #f8f8fa;
+  --background-subtle: #f0f0f4;
+  --background-muted: #e8e8ee;
+  --foreground: #1a1a22;
+  --card: #ffffff;
+  --card-foreground: #1a1a22;
+  --popover: #ffffff;
+  --popover-foreground: #1a1a22;
+  --primary: #1e6bd6;
+  --primary-foreground: #ffffff;
+  --secondary: #f0f0f4;
+  --secondary-foreground: #55556a;
+  --muted: #e8e8ee;
+  --muted-foreground: #8888a0;
+  --accent: #d7e8ff;
+  --accent-foreground: #174189;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #d4d4dc;
+  --input: #d4d4dc;
+  --ring: #3b5ce4;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --info: #3b82f6;
+  --radius: 0.9rem;
 }
 
 .dark {
-  --background: oklch(0.2 0.02 247);
-  --foreground: oklch(0.94 0.02 230);
-  --card: oklch(0.24 0.02 246);
-  --card-foreground: oklch(0.94 0.02 230);
-  --popover: oklch(0.24 0.02 246);
-  --popover-foreground: oklch(0.94 0.02 230);
-  --primary: oklch(0.73 0.16 209);
-  --primary-foreground: oklch(0.17 0.02 250);
-  --secondary: oklch(0.3 0.02 248);
-  --secondary-foreground: oklch(0.95 0.02 230);
-  --muted: oklch(0.28 0.02 248);
-  --muted-foreground: oklch(0.73 0.02 239);
-  --accent: oklch(0.34 0.04 206);
-  --accent-foreground: oklch(0.95 0.02 230);
-  --destructive: oklch(0.67 0.18 27);
-  --destructive-foreground: oklch(0.96 0.01 250);
-  --border: oklch(0.34 0.02 248);
-  --input: oklch(0.34 0.02 248);
-  --ring: oklch(0.74 0.14 209);
+  --background: #131316;
+  --background-subtle: #1a1a1f;
+  --background-muted: #222228;
+  --foreground: #ededf0;
+  --card: #1a1a1f;
+  --card-foreground: #ededf0;
+  --popover: #2a2a32;
+  --popover-foreground: #ededf0;
+  --primary: #5d8dff;
+  --primary-foreground: #ffffff;
+  --secondary: #222228;
+  --secondary-foreground: #a0a0ab;
+  --muted: #222228;
+  --muted-foreground: #6e6e7a;
+  --accent: #24314d;
+  --accent-foreground: #dbe6ff;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: #32323c;
+  --input: #32323c;
+  --ring: #4f6df5;
+  --success: #22c55e;
+  --warning: #f59e0b;
+  --info: #3b82f6;
 }
 
 :root[data-density="compact"] {
@@ -58,10 +67,12 @@
 }
 
 @theme inline {
-  --font-sans: "Manrope", "Segoe UI", sans-serif;
-  --font-display: "Space Grotesk", "Segoe UI", sans-serif;
+  --font-sans: "Inter Variable", "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono Variable", "JetBrains Mono", "Fira Code", monospace;
 
   --color-background: var(--background);
+  --color-background-subtle: var(--background-subtle);
+  --color-background-muted: var(--background-muted);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
@@ -80,6 +91,9 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
   --radius-sm: calc(var(--radius) - 6px);
   --radius-md: calc(var(--radius) - 3px);
   --radius-lg: var(--radius);
@@ -97,13 +111,76 @@ body,
 }
 
 body {
-  @apply bg-background text-foreground antialiased;
+  @apply bg-background text-foreground antialiased transition-colors duration-150;
   font-family: var(--font-sans);
+  line-height: 1.5;
 }
 
 h1,
 h2,
 h3,
 h4 {
-  font-family: var(--font-display);
+  @apply tracking-tight;
+}
+
+code,
+pre,
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+::selection {
+  @apply bg-primary/20 text-foreground;
+}
+
+.skip-link {
+  @apply absolute left-4 top-4 z-[500] -translate-y-16 rounded-lg bg-primary px-3 py-2 text-sm font-semibold text-primary-foreground shadow-md transition-transform focus:translate-y-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background;
+}
+
+.app-progress {
+  @apply block h-3 w-full overflow-hidden rounded-full border border-border/70 bg-muted;
+  appearance: none;
+}
+
+.app-progress::-webkit-progress-bar {
+  background: var(--muted);
+}
+
+.app-progress::-webkit-progress-value {
+  background: var(--primary);
+}
+
+.app-progress::-moz-progress-bar {
+  background: var(--primary);
+}
+
+.app-progress[data-variant="success"]::-webkit-progress-value,
+.app-progress[data-variant="success"]::-moz-progress-bar {
+  background: var(--success);
+}
+
+.app-progress[data-variant="warning"]::-webkit-progress-value,
+.app-progress[data-variant="warning"]::-moz-progress-bar {
+  background: var(--warning);
+}
+
+.app-progress[data-variant="danger"]::-webkit-progress-value,
+.app-progress[data-variant="danger"]::-moz-progress-bar {
+  background: var(--destructive);
+}
+
+.app-progress[data-variant="accent"]::-webkit-progress-value,
+.app-progress[data-variant="accent"]::-moz-progress-bar {
+  background: linear-gradient(90deg, var(--primary), var(--info));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

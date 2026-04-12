@@ -1,5 +1,14 @@
 # Monsoon — Implementation Guide
 
+> Status note (2026-04-12): this guide contains intended architecture and historical plan, not a file-by-file description of the current implementation.
+> Important current-build differences:
+> - Web UI is React/Vite/Tailwind in `web/src`, not the older vanilla JS/CSS structure shown below.
+> - Storage is WAL + snapshot + sorted in-memory structures; it is not a full page-backed B+Tree engine.
+> - LDAP auth is not implemented.
+> - Discovery does not yet include true passive rogue-DHCP sensing.
+> - Sessions are persisted locally in storage and survive restart on the same node.
+> - Backup restore exists in both CLI and REST.
+
 ## Project Structure
 
 ```
@@ -55,9 +64,9 @@ monsoon/
 │   │   ├── ping.go                 # ICMP ping sweep
 │   │   ├── tcp.go                  # TCP connect probe
 │   │   ├── dns.go                  # Reverse DNS lookup
-│   │   ├── passive.go              # Passive DHCP listener
+│   │   ├── passive.go              # Planned passive DHCP listener
 │   │   ├── conflict.go             # Conflict detection logic
-│   │   ├── rogue.go                # Rogue DHCP server detection
+│   │   ├── rogue.go                # Planned rogue DHCP server detection
 │   │   ├── oui.go                  # MAC vendor OUI lookup (embedded DB)
 │   │   ├── scheduler.go            # Scan scheduler (cron-like)
 │   │   └── types.go                # Discovery result types
@@ -67,7 +76,7 @@ monsoon/
 │   │   └── types.go                # DDNS types
 │   ├── storage/
 │   │   ├── engine.go               # Storage engine interface
-│   │   ├── btree.go                # B+Tree implementation
+│   │   ├── btree.go                # Simplified sorted in-memory tree
 │   │   ├── wal.go                  # Write-ahead log
 │   │   ├── page.go                 # Page manager (4KB pages)
 │   │   ├── snapshot.go             # Snapshot create/restore
@@ -107,7 +116,7 @@ monsoon/
 │   ├── auth/
 │   │   ├── auth.go                 # Authentication interface
 │   │   ├── local.go                # Local user store (bcrypt)
-│   │   ├── ldap.go                 # LDAP authentication
+│   │   ├── ldap.go                 # Planned LDAP authentication
 │   │   ├── token.go                # API token management
 │   │   ├── session.go              # Session management
 │   │   └── rbac.go                 # Role-based access control
@@ -135,7 +144,7 @@ monsoon/
 │   │   └── csv.go                  # Generic CSV importer
 │   └── dashboard/
 │       └── embed.go                # go:embed for web dashboard files
-├── web/                            # Web Dashboard (vanilla JS/CSS)
+├── web/                            # Web Dashboard (React/Vite/TypeScript)
 │   ├── index.html                  # SPA shell
 │   ├── css/
 │   │   ├── variables.css           # CSS custom properties (theme)
@@ -232,13 +241,13 @@ monsoon/
 
 ### M2: Storage Engine (internal/storage)
 
-**B+Tree**: Order-256 B+Tree with 4KB pages. Keys are `[]byte`, values are `[]byte`. Supports point lookups, prefix scans, range scans. Concurrent reads via `sync.RWMutex` per tree. Single writer.
+**B+Tree**: Historical design intent. The current build uses a simpler sorted in-memory tree abstraction plus WAL/snapshot persistence rather than a full page-backed B+Tree.
 
 **WAL**: Append-only log of mutations. Each entry: `[length:4][crc32:4][type:1][key_len:2][key][value_len:4][value]`. fsync after each transaction. Segment rotation at 64MB.
 
-**Snapshot**: Consistent read of entire B+Tree state. Serialize to single file with header + sorted key-value pairs. Used for backup and HA initial sync.
+**Snapshot**: Consistent read of the current tree state. Serialize to a single file with header + sorted key-value pairs. Used for backup, restore, and HA initial sync.
 
-**Indexes**: Multiple B+Tree instances for different access patterns. Composite keys for secondary indexes (e.g., `subnet_id + ip` for range scan of IPs within a subnet).
+**Indexes**: Multiple logical trees for different access patterns. Composite keys support secondary lookup patterns such as `subnet_id + ip`.
 
 ### M3: DHCPv4 Engine (internal/dhcpv4)
 
@@ -310,7 +319,7 @@ Similar to DHCPv4 but:
 - Multiple MACs for same IP (conflict)
 - DHCP lease but no network presence (orphaned)
 
-**rogue.go**: Passive listener on DHCP client port. Detect DHCPOFFER from unexpected source IPs. Alert on any DHCP server not in configured list.
+**rogue.go**: Planned passive listener on DHCP client port. The current build does not yet implement true passive rogue-DHCP detection.
 
 ### M7: REST API (internal/api/rest)
 
@@ -352,9 +361,9 @@ JSON-RPC 2.0 over SSE transport. Tool definitions expose IPAM operations with ri
 
 ### M11: Authentication (internal/auth)
 
-**local.go**: bcrypt password hashing. User store in embedded storage. Admin user created on `--init`. API tokens: random 32-byte hex, stored hashed.
+**local.go**: bcrypt password hashing. User store in embedded storage. `--init` writes config only; first admin is created via bootstrap or pre-seeded bcrypt hash. API tokens are random and stored hashed.
 
-**session.go**: Random 32-byte session ID. Server-side session store (in-memory + periodic persistence). Secure cookie: `HttpOnly`, `SameSite=Strict`, optional `Secure` flag.
+**session.go**: Random session ID. Server-side session store persisted in storage for same-node restart continuity. Secure cookie: `HttpOnly`, `SameSite=Strict`, optional `Secure` flag.
 
 **rbac.go**: Three roles: admin, operator, viewer. Permission matrix checked per endpoint. API tokens scoped by role + optional subnet filter.
 

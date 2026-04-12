@@ -1,10 +1,16 @@
-import { KeyRound, LockKeyhole, LogIn, ShieldCheck, UserRound } from "lucide-react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { KeyRound, Loader2, LockKeyhole, LogIn, ShieldCheck, UserRound } from "lucide-react"
 import { useState } from "react"
+import { useForm } from "react-hook-form"
+import { z } from "zod"
 
+import { ErrorState } from "@/components/shared/error-state"
 import { ThemeToggle } from "@/components/layout/theme-toggle"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 
 type AuthGateProps = {
   busy: boolean
@@ -13,32 +19,52 @@ type AuthGateProps = {
   onBootstrap: (username: string, password: string) => Promise<void>
 }
 
-export function AuthGate({ busy, error, onLogin, onBootstrap }: AuthGateProps) {
-  const [username, setUsername] = useState("admin")
-  const [password, setPassword] = useState("")
-  const [working, setWorking] = useState<"login" | "bootstrap" | null>(null)
+const authSchema = z.object({
+  username: z.string().trim().min(1, "Username is required"),
+  password: z.string().min(1, "Password is required"),
+})
 
-  const submitLogin = async () => {
+type AuthFormValues = z.infer<typeof authSchema>
+
+export function AuthGate({ busy, error, onLogin, onBootstrap }: AuthGateProps) {
+  const [working, setWorking] = useState<"login" | "bootstrap" | null>(null)
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isSubmitting, isValid },
+  } = useForm<AuthFormValues>({
+    resolver: zodResolver(authSchema),
+    mode: "onChange",
+    defaultValues: {
+      username: "admin",
+      password: "",
+    },
+  })
+
+  const submitLogin = handleSubmit(async (values) => {
     setWorking("login")
     try {
-      await onLogin(username, password)
+      await onLogin(values.username, values.password)
+      reset({ ...values, password: "" })
     } catch {
       // Error is surfaced by the shared dashboard error state.
     } finally {
       setWorking(null)
     }
-  }
+  })
 
-  const submitBootstrap = async () => {
+  const submitBootstrap = handleSubmit(async (values) => {
     setWorking("bootstrap")
     try {
-      await onBootstrap(username, password)
+      await onBootstrap(values.username, values.password)
+      reset({ ...values, password: "" })
     } catch {
       // Error is surfaced by the shared dashboard error state.
     } finally {
       setWorking(null)
     }
-  }
+  })
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
@@ -83,30 +109,42 @@ export function AuthGate({ busy, error, onLogin, onBootstrap }: AuthGateProps) {
             <CardDescription>Use your local operator account to continue.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <input
-              className="h-10 w-full rounded-xl border border-border/70 bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="Username"
-              value={username}
-              onChange={(event) => setUsername(event.target.value)}
-            />
-            <input
-              className="h-10 w-full rounded-xl border border-border/70 bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-ring"
-              placeholder="Password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-            />
-            <div className="grid gap-2 sm:grid-cols-2">
-              <Button onClick={() => void submitLogin()} disabled={busy || working !== null}>
-                <LogIn className="mr-2 size-4" />
-                {working === "login" ? "Signing in..." : "Login"}
-              </Button>
-              <Button variant="outline" onClick={() => void submitBootstrap()} disabled={busy || working !== null}>
-                <UserRound className="mr-2 size-4" />
-                {working === "bootstrap" ? "Bootstrapping..." : "Bootstrap Admin"}
-              </Button>
-            </div>
-            {error && <p className="rounded-lg border border-rose-400/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{error}</p>}
+            <form className="space-y-3" onSubmit={(event) => void submitLogin(event)}>
+              <div className="space-y-2">
+                <Label htmlFor="auth-gate-username">Username</Label>
+                <Input
+                  id="auth-gate-username"
+                  placeholder="Username"
+                  aria-invalid={errors.username ? "true" : "false"}
+                  {...register("username")}
+                />
+                {errors.username ? <p className="text-xs text-destructive">{errors.username.message}</p> : null}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="auth-gate-password">Password</Label>
+                <Input
+                  id="auth-gate-password"
+                  placeholder="Password"
+                  type="password"
+                  aria-invalid={errors.password ? "true" : "false"}
+                  {...register("password")}
+                />
+                {errors.password ? <p className="text-xs text-destructive">{errors.password.message}</p> : null}
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <Button type="submit" disabled={busy || !isValid || isSubmitting || working !== null}>
+                  {working === "login" ? <Loader2 className="mr-2 size-4 animate-spin" /> : <LogIn className="mr-2 size-4" />}
+                  {working === "login" ? "Signing in..." : "Login"}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => void submitBootstrap()} disabled={busy || !isValid || isSubmitting || working !== null}>
+                  {working === "bootstrap" ? <Loader2 className="mr-2 size-4 animate-spin" /> : <UserRound className="mr-2 size-4" />}
+                  {working === "bootstrap" ? "Bootstrapping..." : "Bootstrap Admin"}
+                </Button>
+              </div>
+            </form>
+            {error ? <ErrorState title="Authentication failed" description={error} className="p-4" /> : null}
           </CardContent>
         </Card>
       </div>

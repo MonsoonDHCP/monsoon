@@ -114,7 +114,7 @@ func TestBuildTargetsPoolBoundsAndPersistence(t *testing.T) {
 
 	targets := engine.buildTargets([]ipam.Subnet{subnet}, map[string]knownHost{
 		"10.30.0.5": {ip: "10.30.0.5"},
-	})
+	}, nil)
 	if len(targets) != 4 {
 		t.Fatalf("targets = %v, want 4", targets)
 	}
@@ -158,5 +158,116 @@ func TestBuildTargetsPoolBoundsAndPersistence(t *testing.T) {
 	reloaded := NewEngine(eng, nil, nil, time.Minute)
 	if reloaded.latestID != "scan-1" || reloaded.lastScanAt.IsZero() || reloaded.nextScanAt.IsZero() {
 		t.Fatalf("metadata was not loaded: latest=%q last=%v next=%v", reloaded.latestID, reloaded.lastScanAt, reloaded.nextScanAt)
+	}
+}
+
+func TestBuildTargetsIncludesPreviousScopedHosts(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeDiscoveryScans, treeDiscoveryMeta})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	subnet := ipam.Subnet{
+		CIDR: "10.40.0.0/24",
+		DHCP: ipam.DHCPPool{
+			Enabled:   true,
+			PoolStart: "10.40.0.10",
+			PoolEnd:   "10.40.0.11",
+		},
+	}
+
+	engine := NewEngineWithOptions(eng, nil, nil, time.Minute, Options{
+		Methods:             []string{"ping"},
+		MaxTargetsPerSubnet: 1,
+	})
+
+	targets := engine.buildTargets([]ipam.Subnet{subnet}, map[string]knownHost{
+		"10.40.0.9": {ip: "10.40.0.9"},
+	}, map[string]ObservedHost{
+		"10.40.0.12": {IP: "10.40.0.12", Subnet: "10.40.0.0/24"},
+	})
+
+	if len(targets) != 3 {
+		t.Fatalf("targets = %v, want 3", targets)
+	}
+	if targets[0] != "10.40.0.9" || targets[1] != "10.40.0.10" || targets[2] != "10.40.0.12" {
+		t.Fatalf("unexpected target order: %v", targets)
+	}
+}
+
+func TestSubnetScopedPersistencePreservesUnrelatedPreviousHosts(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeDiscoveryScans, treeDiscoveryMeta})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	engine := NewEngine(eng, nil, nil, time.Minute)
+	first := ScanResult{
+		ScanID:      "scan-all",
+		Status:      "completed",
+		StartedAt:   time.Now().UTC().Add(-2 * time.Second),
+		CompletedAt: time.Now().UTC().Add(-time.Second),
+		Hosts: []ObservedHost{
+			{IP: "10.50.0.10", Subnet: "10.50.0.0/24", State: "known", SeenAt: time.Now().UTC()},
+			{IP: "10.60.0.10", Subnet: "10.60.0.0/24", State: "known", SeenAt: time.Now().UTC()},
+		},
+	}
+	if err := engine.persistResult(first); err != nil {
+		t.Fatalf("persist first result: %v", err)
+	}
+
+	second := ScanResult{
+		ScanID:      "scan-scoped",
+		Status:      "completed",
+		Subnets:     []string{"10.50.0.0/24"},
+		StartedAt:   time.Now().UTC().Add(-500 * time.Millisecond),
+		CompletedAt: time.Now().UTC(),
+		Hosts: []ObservedHost{
+			{IP: "10.50.0.11", Subnet: "10.50.0.0/24", State: "new", SeenAt: time.Now().UTC()},
+		},
+	}
+	if err := engine.persistResult(second); err != nil {
+		t.Fatalf("persist second result: %v", err)
+	}
+
+	hosts := engine.loadPreviousHosts()
+	if _, ok := hosts["10.60.0.10"]; !ok {
+		t.Fatalf("expected unrelated subnet host to be preserved, got %#v", hosts)
+	}
+	if _, ok := hosts["10.50.0.11"]; !ok {
+		t.Fatalf("expected scoped subnet host to be written, got %#v", hosts)
+	}
+	if _, ok := hosts["10.50.0.10"]; ok {
+		t.Fatalf("expected older scoped host to be replaced by latest scoped snapshot, got %#v", hosts)
+	}
+}
+
+func TestSubnetFiltersApplyToKnownHostsObservedHostsAndConflicts(t *testing.T) {
+	subnets := []ipam.Subnet{{CIDR: "10.70.0.0/24"}}
+
+	known := filterKnownHostsForSubnets(map[string]knownHost{
+		"10.70.0.10": {ip: "10.70.0.10", subnet: "10.70.0.0/24"},
+		"10.80.0.10": {ip: "10.80.0.10", subnet: "10.80.0.0/24"},
+	}, subnets)
+	if len(known) != 1 || known["10.70.0.10"].ip == "" {
+		t.Fatalf("unexpected known hosts filter result: %#v", known)
+	}
+
+	observed := filterObservedHostsForSubnets(map[string]ObservedHost{
+		"10.70.0.20": {IP: "10.70.0.20", Subnet: "10.70.0.0/24"},
+		"10.80.0.20": {IP: "10.80.0.20", Subnet: "10.80.0.0/24"},
+	}, subnets)
+	if len(observed) != 1 || observed["10.70.0.20"].IP == "" {
+		t.Fatalf("unexpected observed hosts filter result: %#v", observed)
+	}
+
+	conflicts := filterConflictMapForSubnets(map[string]map[string]struct{}{
+		"10.70.0.30": {"AA": {}},
+		"10.80.0.30": {"BB": {}},
+	}, subnets)
+	if len(conflicts) != 1 || conflicts["10.70.0.30"] == nil {
+		t.Fatalf("unexpected conflict filter result: %#v", conflicts)
 	}
 }

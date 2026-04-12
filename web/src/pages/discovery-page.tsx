@@ -1,6 +1,8 @@
 import { Radar, ShieldAlert, Telescope } from "lucide-react"
 
 import { useDashboard } from "@/app/dashboard-context"
+import { EmptyState } from "@/components/shared/empty-state"
+import { ProgressBar } from "@/components/shared/progress-bar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -30,12 +32,12 @@ export function DiscoveryPage() {
               {discovery?.scanning ? "Scanning..." : "Trigger scan"}
             </Button>
             <div className="mt-3">
-              <div className="h-2 rounded-full bg-muted">
-                <div
-                  className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-teal-400 transition-all"
-                  style={{ width: `${Math.max(0, Math.min(100, discoveryProgress?.percent ?? 0))}%` }}
-                />
-              </div>
+              <ProgressBar
+                value={discoveryProgress?.percent ?? 0}
+                label="Discovery progress"
+                variant={discovery?.scanning ? "accent" : "success"}
+                className="h-2"
+              />
               <p className="mt-2 text-xs text-muted-foreground">
                 Phase: {discoveryProgress?.phase ?? "idle"} | {discoveryProgress?.processed ?? 0}/{discoveryProgress?.total ?? 0}
               </p>
@@ -77,14 +79,21 @@ export function DiscoveryPage() {
 
       <div className="grid gap-4 xl:grid-cols-2">
         <Card>
-          <CardHeader>
-            <CardTitle>Recent scans</CardTitle>
-            <CardDescription>{discoveryResults.length} latest scan records</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {discoveryResults.map((scan) => (
-              <div key={scan.scan_id} className="rounded-lg border border-border/70 bg-background/70 p-3">
-                <div className="flex items-center justify-between gap-2">
+        <CardHeader>
+          <CardTitle>Recent scans</CardTitle>
+          <CardDescription>{discoveryResults.length} latest scan records</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          {discoveryResults.length === 0 ? (
+            <EmptyState
+              icon={Telescope}
+              title="No discovery results yet"
+              description="Run a subnet scan to populate discovery history and anomaly tracking."
+            />
+          ) : null}
+          {discoveryResults.map((scan) => (
+            <div key={scan.scan_id} className="rounded-lg border border-border/70 bg-background/70 p-3">
+              <div className="flex items-center justify-between gap-2">
                   <p className="font-mono text-xs text-cyan-300">{scan.scan_id}</p>
                   <Badge variant={scan.status === "completed" ? "success" : "warning"}>{scan.status}</Badge>
                 </div>
@@ -93,7 +102,6 @@ export function DiscoveryPage() {
                 </p>
               </div>
             ))}
-            {discoveryResults.length === 0 && <p className="text-sm text-muted-foreground">No scan results yet.</p>}
           </CardContent>
         </Card>
 
@@ -115,9 +123,13 @@ export function DiscoveryPage() {
                 <p className="text-xs text-amber-50/90">{rogue.source || "unknown source"}</p>
               </div>
             ))}
-            {discoveryConflicts.length === 0 && rogueServers.length === 0 && (
-              <p className="text-sm text-muted-foreground">No active anomalies from latest scan.</p>
-            )}
+            {discoveryConflicts.length === 0 && rogueServers.length === 0 ? (
+              <EmptyState
+                icon={ShieldAlert}
+                title="No active anomalies"
+                description="Latest persisted discovery results do not include conflicts or rogue DHCP alerts."
+              />
+            ) : null}
           </CardContent>
         </Card>
       </div>

@@ -2,9 +2,11 @@ import { ClipboardList, Download, Search } from "lucide-react"
 import { useMemo, useState } from "react"
 
 import { useDashboard } from "@/app/dashboard-context"
+import { EmptyState } from "@/components/shared/empty-state"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 
 export function AuditPage() {
   const { auditEntries } = useDashboard()
@@ -63,15 +65,23 @@ export function AuditPage() {
         <CardContent className="space-y-3">
           <div className="flex items-center gap-2 rounded-xl border border-border/70 bg-muted/30 px-3 py-2">
             <Search className="size-4 text-muted-foreground" />
-            <input
+            <Input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="h-8 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
               placeholder="Filter by actor, action, object..."
+              aria-label="Filter audit log"
             />
           </div>
 
           <div className="space-y-2">
+            {filtered.length === 0 ? (
+              <EmptyState
+                icon={ClipboardList}
+                title="No audit entries found"
+                description="No audit records match the current filter."
+              />
+            ) : null}
             {filtered.map((item) => (
               <div key={item.id} className="rounded-xl border border-border/70 bg-background/60 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -83,7 +93,6 @@ export function AuditPage() {
                 </p>
               </div>
             ))}
-            {filtered.length === 0 && <p className="text-sm text-muted-foreground">No audit entries found.</p>}
           </div>
         </CardContent>
       </Card>

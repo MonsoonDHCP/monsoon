@@ -16,6 +16,7 @@ type syncMessage struct {
 	Node      string        `json:"node,omitempty"`
 	Secret    string        `json:"secret,omitempty"`
 	Timestamp time.Time     `json:"timestamp,omitempty"`
+	Sequence  int64         `json:"sequence,omitempty"`
 	Leases    []lease.Lease `json:"leases,omitempty"`
 	Lease     *lease.Lease  `json:"lease,omitempty"`
 	DeleteIP  string        `json:"delete_ip,omitempty"`
@@ -78,7 +79,7 @@ func (m *Manager) requestSnapshot(ctx context.Context) error {
 		return err
 	}
 	m.updateSyncLag(time.Since(resp.Timestamp))
-	m.markSnapshotDone()
+	m.markSnapshotDone(resp.Sequence)
 	return nil
 }
 
@@ -96,9 +97,12 @@ func (m *Manager) applySnapshot(ctx context.Context, leases []lease.Lease) error
 		desired[ip] = item
 	}
 	for _, item := range desired {
-		if err := m.store.Upsert(ctx, item); err != nil {
+		if err := m.upsertLeaseReplica(ctx, item); err != nil {
 			return err
 		}
+	}
+	if normalizeMode(m.mode) == "load-sharing" {
+		return nil
 	}
 	existing, err := m.store.ListAll(ctx)
 	if err != nil {
@@ -108,7 +112,7 @@ func (m *Manager) applySnapshot(ctx context.Context, leases []lease.Lease) error
 		if _, ok := desired[strings.TrimSpace(item.IP)]; ok {
 			continue
 		}
-		if err := m.store.Delete(ctx, item.IP); err != nil {
+		if err := m.deleteLeaseReplica(ctx, item.IP); err != nil {
 			return err
 		}
 	}
@@ -116,6 +120,10 @@ func (m *Manager) applySnapshot(ctx context.Context, leases []lease.Lease) error
 }
 
 func (m *Manager) pushLeaseUpdate(ctx context.Context, item lease.Lease) error {
+	return m.pushLeaseUpdateWithSequence(ctx, m.nextSyncSequence(), item)
+}
+
+func (m *Manager) pushLeaseUpdateWithSequence(ctx context.Context, seq int64, item lease.Lease) error {
 	if m.store == nil {
 		return nil
 	}
@@ -124,17 +132,41 @@ func (m *Manager) pushLeaseUpdate(ctx context.Context, item lease.Lease) error {
 		Node:      m.node,
 		Secret:    m.secret,
 		Timestamp: time.Now().UTC(),
+		Sequence:  seq,
 		Lease:     &item,
 	})
 }
 
 func (m *Manager) pushLeaseDelete(ctx context.Context, ip string) error {
+	return m.pushLeaseDeleteWithSequence(ctx, m.nextSyncSequence(), ip)
+}
+
+func (m *Manager) pushLeaseDeleteWithSequence(ctx context.Context, seq int64, ip string) error {
 	return m.sendSync(ctx, syncMessage{
 		Type:      "lease_delete",
 		Node:      m.node,
 		Secret:    m.secret,
 		Timestamp: time.Now().UTC(),
+		Sequence:  seq,
 		DeleteIP:  ip,
+	})
+}
+
+func (m *Manager) pushSnapshot(ctx context.Context) error {
+	if m.store == nil {
+		return nil
+	}
+	leases, err := m.store.ListAll(ctx)
+	if err != nil {
+		return err
+	}
+	return m.sendSync(ctx, syncMessage{
+		Type:      "snapshot_push",
+		Node:      m.node,
+		Secret:    m.secret,
+		Timestamp: time.Now().UTC(),
+		Sequence:  m.currentSyncSequence(),
+		Leases:    leases,
 	})
 }
 
@@ -154,6 +186,9 @@ func (m *Manager) sendSync(ctx context.Context, msg syncMessage) error {
 	}
 	if err := validateSecret(m.secret, resp.Secret); err != nil {
 		return err
+	}
+	if resp.Type == "resync_required" && (msg.Type == "lease_upsert" || msg.Type == "lease_delete") {
+		return m.pushSnapshot(ctx)
 	}
 	return nil
 }

@@ -28,7 +28,7 @@ func TestDUIDHelpersAndErrors(t *testing.T) {
 		t.Fatalf("parse DUID-LL = %+v err=%v", parsed, err)
 	}
 
-	en := GenerateDUIDEN(4242, []byte{1, 2, 3})
+	en := []byte{0, 2, 0, 0, 16, 146, 1, 2, 3}
 	parsed, err = ParseDUID(en)
 	if err != nil || parsed.Type != DUIDTypeEN || parsed.EnterpriseNumber != 4242 {
 		t.Fatalf("parse DUID-EN = %+v err=%v", parsed, err)
@@ -42,20 +42,6 @@ func TestDUIDHelpersAndErrors(t *testing.T) {
 		t.Fatalf("parse DUID-UUID = %+v err=%v", parsed, err)
 	}
 
-	randomRaw, err := GenerateRandomDUIDUUID()
-	if err != nil {
-		t.Fatalf("GenerateRandomDUIDUUID: %v", err)
-	}
-	randomParsed, err := ParseDUID(randomRaw)
-	if err != nil {
-		t.Fatalf("ParseDUID(random): %v", err)
-	}
-	if got := randomParsed.UUID[6] >> 4; got != 4 {
-		t.Fatalf("uuid version nibble = %d, want 4", got)
-	}
-	if got := randomParsed.UUID[8] >> 6; got != 2 {
-		t.Fatalf("uuid variant bits = %d, want 2", got)
-	}
 	if got := duidTime(time.Date(1999, 12, 31, 23, 59, 59, 0, time.UTC)); got != 0 {
 		t.Fatalf("duidTime before epoch = %d, want 0", got)
 	}

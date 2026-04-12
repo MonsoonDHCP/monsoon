@@ -19,8 +19,6 @@ export default defineConfig({
             "@radix-ui/react-avatar",
             "@radix-ui/react-dialog",
             "@radix-ui/react-dropdown-menu",
-            "@radix-ui/react-separator",
-            "@radix-ui/react-tabs",
             "@radix-ui/react-tooltip",
             "lucide-react",
             "sonner",

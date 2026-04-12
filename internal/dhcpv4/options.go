@@ -158,9 +158,3 @@ func (o Options) SetDurationSeconds(code byte, sec uint32) {
 func (o Options) SetString(code byte, s string) {
 	o[code] = []byte(s)
 }
-
-func (o Options) SetUint16(code byte, v uint16) {
-	b := make([]byte, 2)
-	binary.BigEndian.PutUint16(b, v)
-	o[code] = b
-}

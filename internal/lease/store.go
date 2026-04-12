@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/monsoondhcp/monsoon/internal/storage"
@@ -32,14 +33,37 @@ type Store interface {
 }
 
 type EngineStore struct {
-	eng *storage.Engine
+	eng          *storage.Engine
+	watchMu      sync.Mutex
+	nextWatchID  int64
+	watchers     map[int64]chan MutationEvent
+	watchStarted bool
+}
+
+type MutationEvent struct {
+	Sequence  int64
+	Timestamp time.Time
+	Op        storage.OpType
+	IP        string
+	Lease     *Lease
 }
 
 func NewStore(eng *storage.Engine) *EngineStore {
-	return &EngineStore{eng: eng}
+	return &EngineStore{
+		eng:      eng,
+		watchers: make(map[int64]chan MutationEvent),
+	}
 }
 
 func (s *EngineStore) Upsert(ctx context.Context, lease Lease) error {
+	return s.upsert(ctx, lease, false)
+}
+
+func (s *EngineStore) UpsertSilent(ctx context.Context, lease Lease) error {
+	return s.upsert(ctx, lease, true)
+}
+
+func (s *EngineStore) upsert(ctx context.Context, lease Lease, silent bool) error {
 	if strings.TrimSpace(lease.IP) == "" {
 		return errors.New("lease.ip is required")
 	}
@@ -56,7 +80,11 @@ func (s *EngineStore) Upsert(ctx context.Context, lease Lease) error {
 		return err
 	}
 
-	return s.eng.Tx(func(tx *storage.Tx) error {
+	txFn := s.eng.Tx
+	if silent {
+		txFn = s.eng.TxSilent
+	}
+	return txFn(func(tx *storage.Tx) error {
 		pk := []byte(lease.IP)
 		tx.Put(treeLeases, pk, raw)
 
@@ -106,6 +134,14 @@ func (s *EngineStore) ListExpiringBefore(ctx context.Context, t time.Time) ([]Le
 }
 
 func (s *EngineStore) Delete(ctx context.Context, ip string) error {
+	return s.delete(ctx, ip, false)
+}
+
+func (s *EngineStore) DeleteSilent(ctx context.Context, ip string) error {
+	return s.delete(ctx, ip, true)
+}
+
+func (s *EngineStore) delete(ctx context.Context, ip string, silent bool) error {
 	lease, err := s.GetByIP(ctx, ip)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
@@ -113,7 +149,11 @@ func (s *EngineStore) Delete(ctx context.Context, ip string) error {
 		}
 		return err
 	}
-	return s.eng.Tx(func(tx *storage.Tx) error {
+	txFn := s.eng.Tx
+	if silent {
+		txFn = s.eng.TxSilent
+	}
+	return txFn(func(tx *storage.Tx) error {
 		tx.Delete(treeLeases, []byte(ip))
 		s.removeSecondaryIndexes(tx, lease)
 		return nil
@@ -136,6 +176,31 @@ func (s *EngineStore) ListAll(_ context.Context) ([]Lease, error) {
 		return nil, err
 	}
 	return out, nil
+}
+
+func (s *EngineStore) WatchMutations() (id int64, ch <-chan MutationEvent, unsubscribe func()) {
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	s.ensureWatchLoopLocked()
+	s.nextWatchID++
+	id = s.nextWatchID
+	c := make(chan MutationEvent, 32)
+	s.watchers[id] = c
+	return id, c, func() {
+		s.watchMu.Lock()
+		defer s.watchMu.Unlock()
+		if sub, ok := s.watchers[id]; ok {
+			delete(s.watchers, id)
+			close(sub)
+		}
+	}
+}
+
+func (s *EngineStore) CurrentSequence() int64 {
+	if s == nil || s.eng == nil {
+		return 0
+	}
+	return s.eng.CurrentSequence()
 }
 
 func (s *EngineStore) addSecondaryIndexes(tx *storage.Tx, l Lease) {
@@ -210,4 +275,59 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (s *EngineStore) ensureWatchLoopLocked() {
+	if s.watchStarted || s.eng == nil {
+		return
+	}
+	s.watchStarted = true
+	_, txCh, _ := s.eng.WatchTx()
+	go s.consumeTxEvents(txCh)
+}
+
+func (s *EngineStore) consumeTxEvents(txCh <-chan storage.TxEvent) {
+	for evt := range txCh {
+		mutation, ok := extractLeaseMutation(evt)
+		if !ok {
+			continue
+		}
+		s.watchMu.Lock()
+		for _, sub := range s.watchers {
+			select {
+			case sub <- mutation:
+			default:
+			}
+		}
+		s.watchMu.Unlock()
+	}
+	s.watchMu.Lock()
+	defer s.watchMu.Unlock()
+	for id, sub := range s.watchers {
+		close(sub)
+		delete(s.watchers, id)
+	}
+}
+
+func extractLeaseMutation(evt storage.TxEvent) (MutationEvent, bool) {
+	for _, item := range evt.Mutations {
+		if item.Tree != treeLeases {
+			continue
+		}
+		out := MutationEvent{
+			Sequence:  evt.Sequence,
+			Timestamp: evt.Timestamp,
+			Op:        item.Op,
+			IP:        string(item.Key),
+		}
+		if item.Op == storage.OpPut {
+			var leaseRecord Lease
+			if err := json.Unmarshal(item.Value, &leaseRecord); err != nil {
+				return MutationEvent{}, false
+			}
+			out.Lease = &leaseRecord
+		}
+		return out, true
+	}
+	return MutationEvent{}, false
 }

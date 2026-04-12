@@ -3,6 +3,7 @@ package ha
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,14 +38,15 @@ func writeWitnessRecord(path string, rec witnessRecord) error {
 	if path == "" {
 		return errors.New("witness path is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(rec)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o600)
+	return atomicWriteFile(path, raw, 0o600)
 }
 
 func witnessOwner(path string, hold time.Duration, now time.Time) (witnessRecord, bool, error) {
@@ -62,4 +64,46 @@ func witnessOwner(path string, hold time.Duration, now time.Time) (witnessRecord
 		return witnessRecord{}, false, nil
 	}
 	return rec, true, nil
+}
+
+func atomicWriteFile(path string, raw []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	tmp, err := os.CreateTemp(dir, base+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			return fmt.Errorf("replace witness file: %w", err)
+		}
+		if retryErr := os.Rename(tmpPath, path); retryErr != nil {
+			return retryErr
+		}
+	}
+	cleanup = false
+	return nil
 }

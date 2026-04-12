@@ -141,6 +141,8 @@ func (c *Client) Send(message EventMessage) {
 		return
 	}
 	select {
+	case <-c.done:
+		return
 	case c.send <- message:
 	default:
 	}
@@ -164,7 +166,6 @@ func (c *Client) Close() {
 		if c.hub != nil {
 			c.hub.unregister(c)
 		}
-		close(c.send)
 		_ = c.writeControlFrame(opcodeClose, nil)
 		_ = c.conn.Close()
 	})

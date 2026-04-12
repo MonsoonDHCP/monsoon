@@ -9,17 +9,15 @@ import (
 )
 
 type Registry struct {
-	mu         sync.RWMutex
-	counters   map[string]map[string]float64
-	gauges     map[string]map[string]float64
-	histograms map[string]map[string][]float64
+	mu       sync.RWMutex
+	counters map[string]map[string]float64
+	gauges   map[string]map[string]float64
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		counters:   make(map[string]map[string]float64),
-		gauges:     make(map[string]map[string]float64),
-		histograms: make(map[string]map[string][]float64),
+		counters: make(map[string]map[string]float64),
+		gauges:   make(map[string]map[string]float64),
 	}
 }
 
@@ -37,14 +35,6 @@ func (r *Registry) SetGauge(name string, labels map[string]string, value float64
 	series := ensureSeries(r.gauges, name)
 	k := labelKey(labels)
 	series[k] = value
-}
-
-func (r *Registry) Observe(name string, labels map[string]string, value float64) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	series := ensureHist(r.histograms, name)
-	k := labelKey(labels)
-	series[k] = append(series[k], value)
 }
 
 func (r *Registry) Handler() http.Handler {
@@ -78,29 +68,6 @@ func (r *Registry) Export() string {
 		}
 	}
 
-	hNames := mapKeys(r.histograms)
-	for _, name := range hNames {
-		b.WriteString(fmt.Sprintf("# TYPE %s summary\n", name))
-		keys := mapKeys(r.histograms[name])
-		for _, key := range keys {
-			vals := r.histograms[name][key]
-			if len(vals) == 0 {
-				continue
-			}
-			var sum float64
-			for _, v := range vals {
-				sum += v
-			}
-			labels := parseLabelKey(key)
-			labelPart := formatLabels(labels)
-			if labelPart != "" {
-				labelPart = "{" + labelPart + "}"
-			}
-			b.WriteString(fmt.Sprintf("%s_sum%s %f\n", name, labelPart, sum))
-			b.WriteString(fmt.Sprintf("%s_count%s %d\n", name, labelPart, len(vals)))
-		}
-	}
-
 	return b.String()
 }
 
@@ -108,15 +75,6 @@ func ensureSeries(m map[string]map[string]float64, name string) map[string]float
 	series, ok := m[name]
 	if !ok {
 		series = make(map[string]float64)
-		m[name] = series
-	}
-	return series
-}
-
-func ensureHist(m map[string]map[string][]float64, name string) map[string][]float64 {
-	series, ok := m[name]
-	if !ok {
-		series = make(map[string][]float64)
 		m[name] = series
 	}
 	return series

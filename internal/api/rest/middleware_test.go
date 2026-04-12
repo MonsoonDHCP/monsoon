@@ -71,7 +71,7 @@ func TestSecurityHeadersMiddlewareHonorsForwardedHTTPS(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
-		TrustedProxyHeadersMiddleware([]string{"192.0.2.0/24"}),
+		TrustedProxyHeadersMiddlewareFunc(func() []string { return []string{"192.0.2.0/24"} }),
 		SecurityHeadersMiddleware(),
 	)
 
@@ -91,7 +91,7 @@ func TestSecurityHeadersMiddlewareIgnoresForwardedHTTPSFromUntrustedClient(t *te
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
-		TrustedProxyHeadersMiddleware([]string{"192.0.2.0/24"}),
+		TrustedProxyHeadersMiddlewareFunc(func() []string { return []string{"192.0.2.0/24"} }),
 		SecurityHeadersMiddleware(),
 	)
 
@@ -182,7 +182,7 @@ func TestAuthRateLimitMiddlewareLimitsSensitiveRoutesPerBucket(t *testing.T) {
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
-		AuthRateLimitMiddleware(1, reg, auditLogger),
+		AuthRateLimitMiddlewareFunc(func() int { return 1 }, reg, auditLogger),
 	)
 
 	firstLogin := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", nil)
@@ -425,7 +425,7 @@ func TestLoggingMiddlewareLogsForwardedIPAndIdentity(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
 		RequestIDMiddleware(),
-		TrustedProxyHeadersMiddleware([]string{"10.0.0.0/8"}),
+		TrustedProxyHeadersMiddlewareFunc(func() []string { return []string{"10.0.0.0/8"} }),
 		identityMiddleware,
 		LoggingMiddleware(),
 	)
@@ -461,7 +461,7 @@ func TestLoggingMiddlewareIgnoresForwardedIPFromUntrustedPeer(t *testing.T) {
 			w.WriteHeader(http.StatusNoContent)
 		}),
 		RequestIDMiddleware(),
-		TrustedProxyHeadersMiddleware([]string{"10.0.0.0/8"}),
+		TrustedProxyHeadersMiddlewareFunc(func() []string { return []string{"10.0.0.0/8"} }),
 		LoggingMiddleware(),
 	)
 

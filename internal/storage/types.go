@@ -1,6 +1,9 @@
 package storage
 
-import "errors"
+import (
+	"errors"
+	"time"
+)
 
 type OpType byte
 
@@ -14,6 +17,12 @@ type Mutation struct {
 	Op    OpType
 	Key   []byte
 	Value []byte
+}
+
+type TxEvent struct {
+	Sequence  int64
+	Timestamp time.Time
+	Mutations []Mutation
 }
 
 var (

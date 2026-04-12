@@ -11,8 +11,6 @@ func TestRegistryExportAndHandler(t *testing.T) {
 	reg := NewRegistry()
 	reg.IncCounter("monsoon_requests_total", map[string]string{"method": "GET", "path": "/health"}, 2)
 	reg.SetGauge("monsoon_up", map[string]string{"instance": "local"}, 1)
-	reg.Observe("monsoon_latency_seconds", map[string]string{"route": "health"}, 0.5)
-	reg.Observe("monsoon_latency_seconds", map[string]string{"route": "health"}, 1.5)
 
 	exported := reg.Export()
 	for _, fragment := range []string{
@@ -20,9 +18,6 @@ func TestRegistryExportAndHandler(t *testing.T) {
 		`monsoon_requests_total{method="GET",path="/health"} 2.000000`,
 		"# TYPE monsoon_up gauge",
 		`monsoon_up{instance="local"} 1.000000`,
-		"# TYPE monsoon_latency_seconds summary",
-		`monsoon_latency_seconds_sum{route="health"} 2.000000`,
-		`monsoon_latency_seconds_count{route="health"} 2`,
 	} {
 		if !strings.Contains(exported, fragment) {
 			t.Fatalf("expected export to contain %q, got %q", fragment, exported)

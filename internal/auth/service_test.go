@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -56,6 +57,63 @@ func TestBootstrapAdminOnlyAllowedOnce(t *testing.T) {
 	}
 	if err := svc.BootstrapAdmin(context.Background(), "admin2", "second-pass"); err != ErrBootstrapUnavailable {
 		t.Fatalf("expected ErrBootstrapUnavailable, got %v", err)
+	}
+}
+
+func TestEnsureAdminDoesNotCreateExtraAdminWhenUsersAlreadyExist(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeUsers, treeTokens, treeTokensByHash})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	defer eng.Close()
+
+	svc := NewService(eng, ServiceOptions{})
+	if err := svc.BootstrapAdmin(context.Background(), "admin", "first-pass"); err != nil {
+		t.Fatalf("bootstrap admin: %v", err)
+	}
+	if err := svc.EnsureAdmin(context.Background(), "shadow-admin", "$2a$10$abcdefghijklmnopqrstuv"); err != nil {
+		t.Fatalf("EnsureAdmin() error = %v", err)
+	}
+	if _, err := svc.GetUser(context.Background(), "shadow-admin"); !errors.Is(err, storage.ErrNotFound) {
+		t.Fatalf("expected EnsureAdmin not to create extra admin, got err=%v", err)
+	}
+}
+
+func TestBootstrapAdminIsSerialized(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{treeUsers, treeTokens, treeTokensByHash})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	defer eng.Close()
+
+	svc := NewService(eng, ServiceOptions{})
+	var wg sync.WaitGroup
+	results := make(chan error, 2)
+
+	for _, username := range []string{"admin-a", "admin-b"} {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			results <- svc.BootstrapAdmin(context.Background(), name, "secret-pass")
+		}(username)
+	}
+	wg.Wait()
+	close(results)
+
+	successes := 0
+	conflicts := 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrBootstrapUnavailable):
+			conflicts++
+		default:
+			t.Fatalf("unexpected bootstrap error: %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("expected one success and one conflict, got successes=%d conflicts=%d", successes, conflicts)
 	}
 }
 

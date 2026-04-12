@@ -3,6 +3,7 @@ package discovery
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,6 +81,15 @@ func TestKnownHostsConflictsAndHelpers(t *testing.T) {
 	if compareIPString("10.0.0.2", "10.0.0.10") >= 0 {
 		t.Fatalf("numeric ip ordering expected")
 	}
+	if prefix := macPrefix("aa-bb-cc-dd-ee-ff"); prefix != "AABBCC" {
+		t.Fatalf("unexpected mac prefix %q", prefix)
+	}
+	if vendor := LookupVendor("00:50:56:AA:BB:CC"); vendor != "VMware, Inc." {
+		t.Fatalf("unexpected vendor lookup %q", vendor)
+	}
+	if note := conflictNoteForMACs([]string{"00:50:56:AA:BB:CC", "B8:27:EB:00:11:22"}); !strings.Contains(note, "VMware, Inc.") || !strings.Contains(note, "Raspberry Pi Foundation") {
+		t.Fatalf("unexpected conflict note %q", note)
+	}
 }
 
 func TestBuildTargetsPoolBoundsAndPersistence(t *testing.T) {
@@ -128,11 +138,11 @@ func TestBuildTargetsPoolBoundsAndPersistence(t *testing.T) {
 		StartedAt:   time.Now().UTC().Add(-time.Second),
 		CompletedAt: time.Now().UTC(),
 		Hosts: []ObservedHost{
-			{IP: "10.30.0.10", State: "known", Hostname: "host-a", SeenAt: time.Now().UTC()},
+			{IP: "10.30.0.10", State: "known", Hostname: "host-a", Vendor: "VMware, Inc.", SeenAt: time.Now().UTC()},
 		},
 		Conflicts: []Conflict{{IP: "10.30.0.10", MACs: []string{"AA", "BB"}}},
 		RogueServers: []RogueServer{
-			{IP: "10.30.0.2", Source: "dhcp", Detected: time.Now().UTC()},
+			{IP: "10.30.0.2", Source: "dhcp", Vendor: "Cisco Systems", Detected: time.Now().UTC()},
 		},
 	}
 	if err := engine.persistResult(result); err != nil {
@@ -140,6 +150,9 @@ func TestBuildTargetsPoolBoundsAndPersistence(t *testing.T) {
 	}
 	if hosts := engine.loadPreviousHosts(); hosts["10.30.0.10"].Hostname != "host-a" {
 		t.Fatalf("expected persisted hosts, got %#v", hosts)
+	}
+	if hosts := engine.loadPreviousHosts(); hosts["10.30.0.10"].Vendor != "VMware, Inc." {
+		t.Fatalf("expected vendor to persist, got %#v", hosts)
 	}
 	latest, err := engine.LatestResult(context.Background())
 	if err != nil || latest.ScanID != "scan-1" {

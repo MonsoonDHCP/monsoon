@@ -30,6 +30,7 @@ function makeDashboard(overrides: Record<string, unknown> = {}) {
     logoutCurrentUser: vi.fn().mockResolvedValue(undefined),
     createToken: vi.fn().mockResolvedValue(undefined),
     revokeToken: vi.fn().mockResolvedValue(undefined),
+    authRequired: false,
     canMutate: true,
     isAdmin: false,
     systemInfo: { version: "dev", uptime_sec: 12, runtime: { goos: "linux", goarch: "amd64", num_cpu: 4 } },
@@ -112,5 +113,20 @@ describe("SettingsPage", () => {
 
     expect(await screen.findByText(/Configured auth mode: ldap/i)).toBeInTheDocument()
     expect(await screen.findByText(/Local bootstrap and password login are unavailable in this build/i)).toBeInTheDocument()
+  })
+
+  it("hides admin-only diagnostics for non-admin sessions", async () => {
+    mockUseDashboard.mockReturnValue(
+      makeDashboard({
+        authRequired: true,
+        currentUser: { username: "viewer", role: "viewer", auth_type: "session" },
+        isAdmin: false,
+      }),
+    )
+
+    render(<SettingsPage />)
+
+    expect(await screen.findByText("Admin access required")).toBeInTheDocument()
+    expect(screen.queryByText("No backups found")).not.toBeInTheDocument()
   })
 })

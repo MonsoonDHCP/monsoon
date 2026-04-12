@@ -131,6 +131,7 @@ export type DiscoveryConflict = {
 export type RogueServer = {
   ip: string
   mac?: string
+  vendor?: string
   source?: string
   detected: string
 }
@@ -138,6 +139,7 @@ export type RogueServer = {
 export type DiscoveryHost = {
   ip: string
   mac?: string
+  vendor?: string
   hostname?: string
   subnet?: string
   state: string

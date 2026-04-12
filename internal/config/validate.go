@@ -35,6 +35,14 @@ func Validate(cfg *Config) error {
 	if cfg.DHCP.MaxLeaseTime.Duration < cfg.DHCP.DefaultLeaseTime.Duration {
 		errs = append(errs, "dhcp.max_lease_time must be >= dhcp.default_lease_time")
 	}
+	if cfg.DHCP.DDNS.Enabled {
+		if strings.TrimSpace(cfg.DHCP.DDNS.DNSServer) == "" {
+			errs = append(errs, "dhcp.ddns.dns_server is required when dhcp.ddns.enabled=true")
+		}
+		if algorithm := strings.ToLower(strings.TrimSpace(cfg.DHCP.DDNS.TSIGAlgorithm)); algorithm != "" && algorithm != "hmac-sha256" {
+			errs = append(errs, "dhcp.ddns.tsig_algorithm must be hmac-sha256")
+		}
+	}
 
 	if err := validateListenAddr(cfg.API.REST.Listen); err != nil {
 		errs = append(errs, "api.rest.listen: "+err.Error())

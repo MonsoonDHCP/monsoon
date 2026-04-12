@@ -71,7 +71,7 @@ type TokenFormValues = z.infer<typeof tokenSchema>
 type HAFormValues = z.infer<typeof haSchema>
 
 export function SettingsPage() {
-  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, canMutate, isAdmin, systemInfo, health, systemConfig, backups, createBackup, restoreBackup, refreshBackups, refreshSystemConfig, saveSystemConfig, requestManualFailover } = useDashboard()
+  const { settings, saveSettings, currentUser, authTokens, tokenSecret, loginWithPassword, bootstrapAndLogin, logoutCurrentUser, createToken, revokeToken, authRequired, canMutate, isAdmin, systemInfo, health, systemConfig, backups, createBackup, restoreBackup, refreshBackups, refreshSystemConfig, saveSystemConfig, requestManualFailover } = useDashboard()
   const { setTheme } = useTheme()
   const [copyState, setCopyState] = useState<"idle" | "copied" | "failed">("idle")
   const [configDraft, setConfigDraft] = useState("")
@@ -121,7 +121,8 @@ export function SettingsPage() {
   const authConfig = (systemConfig?.auth as Record<string, unknown> | undefined) ?? undefined
   const configuredAuthType = typeof authConfig?.type === "string" ? authConfig.type.trim().toLowerCase() : "local"
   const localAuthAvailable = configuredAuthType === "" || configuredAuthType === "local"
-  const canTriggerFailover = Boolean(isAdmin && canMutate && ha?.role === "primary" && ha?.peer === "connected")
+  const hasAdminAccess = !authRequired || isAdmin
+  const canTriggerFailover = Boolean(hasAdminAccess && canMutate && ha?.role === "primary" && ha?.peer === "connected")
   const liveStatus = copyState === "copied"
     ? "Configuration copied to clipboard."
     : copyState === "failed"
@@ -504,102 +505,112 @@ export function SettingsPage() {
             </div>
           </div>
 
-          <div className="flex flex-wrap gap-2">
-            <Button onClick={() => void createBackup()} disabled={!isAdmin || !canMutate}>
-              <HardDriveDownload className="mr-2 size-4" />
-              Create backup
-            </Button>
-            <Button variant="outline" onClick={() => void refreshBackups()}>
-              <RefreshCw className="mr-2 size-4" />
-              Refresh backups
-            </Button>
-            <Button variant="outline" onClick={() => void refreshSystemConfig()}>
-              <RefreshCw className="mr-2 size-4" />
-              Refresh config
-            </Button>
-            <Button variant="outline" onClick={() => void copyConfig()}>
-              <Copy className="mr-2 size-4" />
-              {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy config"}
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <a href="/api/v1/system/config/export?format=yaml" target="_blank" rel="noreferrer">
-                Export config YAML
-              </a>
-            </Button>
-            <Button variant="outline" size="sm" asChild>
-              <a href="/api/v1/system/config/export?format=json" target="_blank" rel="noreferrer">
-                Export config JSON
-              </a>
-            </Button>
-          </div>
-
-          <div className="rounded-lg border border-border/70 bg-background/60">
-            <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
-              <span className="text-xs text-muted-foreground">Sanitized runtime config</span>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={() => setConfigEditing((v) => !v)} disabled={!isAdmin || !canMutate}>
-                  {configEditing ? "Cancel edit" : "Edit config"}
+          {hasAdminAccess ? (
+            <>
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={() => void createBackup()} disabled={!hasAdminAccess || !canMutate}>
+                  <HardDriveDownload className="mr-2 size-4" />
+                  Create backup
                 </Button>
+                <Button variant="outline" onClick={() => void refreshBackups()}>
+                  <RefreshCw className="mr-2 size-4" />
+                  Refresh backups
+                </Button>
+                <Button variant="outline" onClick={() => void refreshSystemConfig()}>
+                  <RefreshCw className="mr-2 size-4" />
+                  Refresh config
+                </Button>
+                <Button variant="outline" onClick={() => void copyConfig()}>
+                  <Copy className="mr-2 size-4" />
+                  {copyState === "copied" ? "Copied" : copyState === "failed" ? "Copy failed" : "Copy config"}
+                </Button>
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/api/v1/system/config/export?format=yaml" target="_blank" rel="noreferrer">
+                    Export config YAML
+                  </a>
+                </Button>
+                <Button variant="outline" size="sm" asChild>
+                  <a href="/api/v1/system/config/export?format=json" target="_blank" rel="noreferrer">
+                    Export config JSON
+                  </a>
+                </Button>
+              </div>
+
+              <div className="rounded-lg border border-border/70 bg-background/60">
+                <div className="flex items-center justify-between border-b border-border/60 px-3 py-2">
+                  <span className="text-xs text-muted-foreground">Sanitized runtime config</span>
+                  <div className="flex gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setConfigEditing((v) => !v)} disabled={!hasAdminAccess || !canMutate}>
+                      {configEditing ? "Cancel edit" : "Edit config"}
+                    </Button>
+                    {configEditing ? (
+                      <Button size="sm" onClick={() => void saveConfigDraft()} disabled={!hasAdminAccess || !canMutate}>
+                        Save config
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
                 {configEditing ? (
-                  <Button size="sm" onClick={() => void saveConfigDraft()} disabled={!isAdmin || !canMutate}>
-                    Save config
-                  </Button>
+                  <Textarea
+                    value={configDraft}
+                    onChange={(event) => setConfigDraft(event.target.value)}
+                    className="h-72 resize-y border-0 bg-transparent font-mono text-[11px] leading-relaxed text-foreground/90 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                  />
+                ) : (
+                  <pre className="max-h-72 overflow-auto px-3 py-2 text-[11px] leading-relaxed text-foreground/90">{systemConfigJSON}</pre>
+                )}
+                {configError ? <p className="border-t border-border/60 px-3 py-2 text-xs text-rose-300">{configError}</p> : null}
+              </div>
+
+              <div className="space-y-2">
+                {backups.slice(0, 8).map((backup) => (
+                  <div key={backup.path} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <p className="font-mono text-[11px] text-foreground">{backup.name}</p>
+                        <p>{backup.created_at} | {(backup.size_bytes / 1024).toFixed(1)} KB</p>
+                        <p className="truncate">{backup.path}</p>
+                      </div>
+                      <AlertDialog>
+                        <AlertDialogTrigger asChild>
+                          <Button variant="outline" size="sm" disabled={!hasAdminAccess || !canMutate}>
+                            Restore
+                          </Button>
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Restore snapshot {backup.name}?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              This replaces current in-memory state with the selected backup. Use it only when you intend to roll the node back.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void restoreSnapshot(backup.name)}>
+                              Restore snapshot
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </div>
+                  </div>
+                ))}
+                {backups.length === 0 ? (
+                  <EmptyState
+                    icon={HardDriveDownload}
+                    title="No backups found"
+                    description="Create the first runtime snapshot to make restore and rollback available."
+                  />
                 ) : null}
               </div>
-            </div>
-            {configEditing ? (
-              <Textarea
-                value={configDraft}
-                onChange={(event) => setConfigDraft(event.target.value)}
-                className="h-72 resize-y border-0 bg-transparent font-mono text-[11px] leading-relaxed text-foreground/90 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
-              />
-            ) : (
-              <pre className="max-h-72 overflow-auto px-3 py-2 text-[11px] leading-relaxed text-foreground/90">{systemConfigJSON}</pre>
-            )}
-            {configError ? <p className="border-t border-border/60 px-3 py-2 text-xs text-rose-300">{configError}</p> : null}
-          </div>
-
-          <div className="space-y-2">
-            {backups.slice(0, 8).map((backup) => (
-              <div key={backup.path} className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <p className="font-mono text-[11px] text-foreground">{backup.name}</p>
-                    <p>{backup.created_at} | {(backup.size_bytes / 1024).toFixed(1)} KB</p>
-                    <p className="truncate">{backup.path}</p>
-                  </div>
-                  <AlertDialog>
-                    <AlertDialogTrigger asChild>
-                      <Button variant="outline" size="sm" disabled={!isAdmin || !canMutate}>
-                        Restore
-                      </Button>
-                    </AlertDialogTrigger>
-                    <AlertDialogContent>
-                      <AlertDialogHeader>
-                        <AlertDialogTitle>Restore snapshot {backup.name}?</AlertDialogTitle>
-                        <AlertDialogDescription>
-                          This replaces current in-memory state with the selected backup. Use it only when you intend to roll the node back.
-                        </AlertDialogDescription>
-                      </AlertDialogHeader>
-                      <AlertDialogFooter>
-                        <AlertDialogCancel>Cancel</AlertDialogCancel>
-                        <AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => void restoreSnapshot(backup.name)}>
-                          Restore snapshot
-                        </AlertDialogAction>
-                      </AlertDialogFooter>
-                    </AlertDialogContent>
-                  </AlertDialog>
-                </div>
-              </div>
-            ))}
-            {backups.length === 0 ? (
-              <EmptyState
-                icon={HardDriveDownload}
-                title="No backups found"
-                description="Create the first runtime snapshot to make restore and rollback available."
-              />
-            ) : null}
-          </div>
+            </>
+          ) : (
+            <EmptyState
+              icon={Shield}
+              title="Admin access required"
+              description="Runtime config exports and backup inventory are visible only to admin sessions."
+            />
+          )}
         </CardContent>
       </Card>
 

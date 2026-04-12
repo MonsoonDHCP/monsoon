@@ -115,12 +115,14 @@ export function DiscoveryPage() {
               <div key={conflict.ip} className="rounded-lg border border-rose-400/30 bg-rose-500/10 p-3">
                 <p className="font-mono text-xs text-rose-200">{conflict.ip}</p>
                 <p className="text-xs text-rose-100/90">MACs: {conflict.macs.join(", ")}</p>
+                {conflict.note ? <p className="mt-1 text-xs text-rose-50/80">{conflict.note}</p> : null}
               </div>
             ))}
             {rogueServers.map((rogue) => (
               <div key={`${rogue.ip}-${rogue.detected}`} className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-3">
                 <p className="font-mono text-xs text-amber-100">Rogue DHCP: {rogue.ip}</p>
                 <p className="text-xs text-amber-50/90">{rogue.source || "unknown source"}</p>
+                {rogue.vendor ? <p className="mt-1 text-xs text-amber-100/80">Vendor: {rogue.vendor}</p> : null}
               </div>
             ))}
             {discoveryConflicts.length === 0 && rogueServers.length === 0 ? (

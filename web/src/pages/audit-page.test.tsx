@@ -11,6 +11,8 @@ vi.mock("@/app/dashboard-context", () => ({
 
 function makeDashboard(overrides: Record<string, unknown> = {}) {
   return {
+    authRequired: false,
+    isAdmin: true,
     auditEntries: [],
     ...overrides,
   }
@@ -57,5 +59,19 @@ describe("AuditPage", () => {
     fireEvent.change(screen.getByLabelText("Filter audit log"), { target: { value: "missing" } })
 
     expect(await screen.findByText("No audit entries found")).toBeInTheDocument()
+  })
+
+  it("shows an access message for non-admin sessions", async () => {
+    mockUseDashboard.mockReturnValue(
+      makeDashboard({
+        authRequired: true,
+        isAdmin: false,
+      }),
+    )
+
+    render(<AuditPage />)
+
+    expect(await screen.findByText("Admin access required")).toBeInTheDocument()
+    expect(screen.queryByRole("link", { name: "Export CSV" })).not.toBeInTheDocument()
   })
 })

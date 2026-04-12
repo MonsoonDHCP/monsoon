@@ -17,12 +17,22 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 var ErrBootstrapUnavailable = errors.New("admin bootstrap is unavailable")
 
 func (s *Service) EnsureAdmin(ctx context.Context, username string, passwordHash string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	username = normalizeUsername(username)
 	if username == "" {
 		username = "admin"
 	}
 
 	if _, err := s.GetUser(ctx, username); err == nil {
+		return nil
+	}
+	hasUsers, err := s.HasUsers(ctx)
+	if err != nil {
+		return err
+	}
+	if hasUsers {
 		return nil
 	}
 
@@ -39,6 +49,9 @@ func (s *Service) EnsureAdmin(ctx context.Context, username string, passwordHash
 }
 
 func (s *Service) BootstrapAdmin(ctx context.Context, username string, password string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	username = normalizeUsername(username)
 	if username == "" {
 		username = "admin"

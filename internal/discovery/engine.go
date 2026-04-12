@@ -24,6 +24,7 @@ const (
 	treeDiscoveryScans = "discovery_scans"
 	treeDiscoveryMeta  = "discovery_meta"
 	keyLatestHosts     = "latest_hosts"
+	keyLatestRogue     = "latest_rogue"
 	keyLatestScanID    = "latest_scan_id"
 	keyLastScanAt      = "last_scan_at"
 )
@@ -43,13 +44,14 @@ type Engine struct {
 	interval   time.Duration
 	options    Options
 
-	mu         sync.RWMutex
-	scanning   bool
-	lastScanAt time.Time
-	nextScanAt time.Time
-	latestID   string
-	progress   Progress
-	onComplete func(ScanResult)
+	mu          sync.RWMutex
+	scanning    bool
+	lastScanAt  time.Time
+	nextScanAt  time.Time
+	latestID    string
+	latestRogue []RogueServer
+	progress    Progress
+	onComplete  func(ScanResult)
 }
 
 type knownHost struct {
@@ -157,9 +159,9 @@ func (e *Engine) Status(_ context.Context) Status {
 		LatestScanID:      e.latestID,
 		Progress:          e.progress,
 	}
+	status.RogueDetected = len(e.latestRogue) > 0
 	if latest, err := e.LatestResult(context.Background()); err == nil {
 		status.ActiveConflicts = len(latest.Conflicts)
-		status.RogueDetected = len(latest.RogueServers) > 0
 	}
 	return status
 }
@@ -277,6 +279,7 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 		current[ip] = ObservedHost{
 			IP:       ip,
 			MAC:      base.mac,
+			Vendor:   LookupVendor(base.mac),
 			Hostname: pickHostname(base.hostname, outcome.hostname),
 			Subnet:   base.subnet,
 			State:    state,
@@ -291,6 +294,7 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 		current[ip] = ObservedHost{
 			IP:       ip,
 			MAC:      prev.MAC,
+			Vendor:   prev.Vendor,
 			Hostname: prev.Hostname,
 			Subnet:   prev.Subnet,
 			State:    "missing",
@@ -312,7 +316,7 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 			IP:       ip,
 			MACs:     macs,
 			Severity: "high",
-			Note:     "multiple MAC addresses observed for the same IP",
+			Note:     conflictNoteForMACs(macs),
 		})
 	}
 	sort.Slice(conflicts, func(i, j int) bool { return conflicts[i].IP < conflicts[j].IP })
@@ -335,7 +339,7 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 
 	result.Hosts = hosts
 	result.Conflicts = conflicts
-	result.RogueServers = []RogueServer{}
+	result.RogueServers = e.snapshotRogueServers()
 	result.TotalHosts = len(hosts)
 	result.CompletedAt = time.Now().UTC()
 	result.DurationMS = result.CompletedAt.Sub(started).Milliseconds()
@@ -691,6 +695,37 @@ func pickHostname(base string, probe string) string {
 	return strings.TrimSpace(probe)
 }
 
+func (e *Engine) snapshotRogueServers() []RogueServer {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if len(e.latestRogue) == 0 {
+		return []RogueServer{}
+	}
+	out := make([]RogueServer, len(e.latestRogue))
+	copy(out, e.latestRogue)
+	return out
+}
+
+func conflictNoteForMACs(macs []string) string {
+	vendors := make([]string, 0, len(macs))
+	seen := map[string]struct{}{}
+	for _, mac := range macs {
+		vendor := LookupVendor(mac)
+		if vendor == "" {
+			continue
+		}
+		if _, ok := seen[vendor]; ok {
+			continue
+		}
+		seen[vendor] = struct{}{}
+		vendors = append(vendors, vendor)
+	}
+	if len(vendors) == 0 {
+		return "multiple MAC addresses observed for the same IP"
+	}
+	return "multiple MAC addresses observed for the same IP (" + strings.Join(vendors, ", ") + ")"
+}
+
 func hasActiveProbe(methods []string) bool {
 	return containsMethod(methods, "ping") || containsMethod(methods, "tcp") || containsMethod(methods, "arp")
 }
@@ -909,6 +944,14 @@ func (e *Engine) LatestConflicts(ctx context.Context) ([]Conflict, error) {
 }
 
 func (e *Engine) LatestRogueServers(ctx context.Context) ([]RogueServer, error) {
+	e.mu.RLock()
+	if len(e.latestRogue) > 0 {
+		out := make([]RogueServer, len(e.latestRogue))
+		copy(out, e.latestRogue)
+		e.mu.RUnlock()
+		return out, nil
+	}
+	e.mu.RUnlock()
 	result, err := e.LatestResult(ctx)
 	if err != nil {
 		if err == storage.ErrNotFound {
@@ -943,7 +986,54 @@ func (e *Engine) loadMeta() {
 	if err == nil {
 		e.latestID = string(latestRaw)
 	}
+	rogueRaw, err := e.store.Get(treeDiscoveryMeta, []byte(keyLatestRogue))
+	if err == nil {
+		var rogue []RogueServer
+		if json.Unmarshal(rogueRaw, &rogue) == nil {
+			e.latestRogue = rogue
+		}
+	}
 	e.nextScanAt = time.Now().UTC().Add(e.interval)
+}
+
+func (e *Engine) RecordRogueServer(_ context.Context, item RogueServer) error {
+	if strings.TrimSpace(item.IP) == "" {
+		return nil
+	}
+	item.IP = strings.TrimSpace(item.IP)
+	item.MAC = strings.ToUpper(strings.TrimSpace(item.MAC))
+	if item.Vendor == "" {
+		item.Vendor = LookupVendor(item.MAC)
+	}
+	if item.Detected.IsZero() {
+		item.Detected = time.Now().UTC()
+	}
+
+	e.mu.Lock()
+	merged := make([]RogueServer, 0, len(e.latestRogue)+1)
+	merged = append(merged, item)
+	for _, existing := range e.latestRogue {
+		if strings.EqualFold(existing.IP, item.IP) {
+			continue
+		}
+		merged = append(merged, existing)
+		if len(merged) >= 16 {
+			break
+		}
+	}
+	e.latestRogue = merged
+	snapshot := make([]RogueServer, len(e.latestRogue))
+	copy(snapshot, e.latestRogue)
+	e.mu.Unlock()
+
+	raw, err := encodeRogueServers(snapshot)
+	if err != nil {
+		return err
+	}
+	return e.store.Tx(func(tx *storage.Tx) error {
+		tx.Put(treeDiscoveryMeta, []byte(keyLatestRogue), raw)
+		return nil
+	})
 }
 
 func normalizeReason(reason string) string {

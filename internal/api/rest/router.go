@@ -5,6 +5,7 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"runtime"
@@ -159,7 +160,10 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 		}, nil)
 	})
 
-	mux.HandleFunc("GET /api/v1/system/config", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /api/v1/system/config", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRole(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
 		if deps.ConfigSnapshot == nil {
 			WriteError(w, http.StatusNotImplemented, "config_unavailable", "config snapshot is not available")
 			return
@@ -195,6 +199,9 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 	})
 
 	mux.HandleFunc("GET /api/v1/system/config/export", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRole(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
 		if deps.ConfigSnapshot == nil {
 			WriteError(w, http.StatusNotImplemented, "config_unavailable", "config snapshot is not available")
 			return
@@ -229,6 +236,9 @@ func registerSystemRoutes(mux *http.ServeMux, deps RouterDeps) {
 	})
 
 	mux.HandleFunc("GET /api/v1/system/backups", func(w http.ResponseWriter, r *http.Request) {
+		if !requireRole(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
 		if deps.ListBackups == nil {
 			WriteJSON(w, http.StatusOK, []SystemBackup{}, map[string]any{"total": 0})
 			return
@@ -555,8 +565,7 @@ func maskSecrets(value any) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, item := range typed {
-			keyLower := strings.ToLower(key)
-			if strings.Contains(keyLower, "password") || strings.Contains(keyLower, "secret") || strings.Contains(keyLower, "hash") {
+			if isSensitiveConfigKey(key) {
 				if str, ok := item.(string); ok && strings.TrimSpace(str) != "" {
 					typed[key] = "***"
 					continue
@@ -569,6 +578,27 @@ func maskSecrets(value any) {
 			maskSecrets(item)
 		}
 	}
+}
+
+func isSensitiveConfigKey(key string) bool {
+	keyLower := strings.ToLower(strings.TrimSpace(key))
+	for _, marker := range []string{
+		"password",
+		"secret",
+		"hash",
+		"token",
+		"client_secret",
+		"private_key",
+		"privatekey",
+		"api_key",
+		"apikey",
+		"credential",
+	} {
+		if strings.Contains(keyLower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func registerLeaseRoutes(mux *http.ServeMux, store lease.Store, engine *ipam.Engine, broker *events.Broker, logger *audit.Logger) {
@@ -903,18 +933,16 @@ func registerAddressRoutes(mux *http.ServeMux, engine *ipam.Engine) {
 
 func registerAuditRoutes(mux *http.ServeMux, logger *audit.Logger) {
 	mux.HandleFunc("GET /api/v1/audit", func(w http.ResponseWriter, r *http.Request) {
-		limit := 100
-		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			if err != nil || parsed <= 0 {
-				WriteError(w, http.StatusBadRequest, "invalid_limit", "limit must be positive")
-				return
-			}
-			limit = parsed
+		if !requireRole(w, r, auth.DefaultRoleAdmin) {
+			return
+		}
+		limit, err := parseBoundedPositiveLimit(r.URL.Query().Get("limit"), 100, 500)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_limit", err.Error())
+			return
 		}
 
 		var from, to time.Time
-		var err error
 		if raw := strings.TrimSpace(r.URL.Query().Get("from")); raw != "" {
 			from, err = time.Parse(time.RFC3339, raw)
 			if err != nil {
@@ -1054,14 +1082,10 @@ func registerDiscoveryRoutes(mux *http.ServeMux, engine *discovery.Engine, broke
 	})
 
 	mux.HandleFunc("GET /api/v1/discovery/results", func(w http.ResponseWriter, r *http.Request) {
-		limit := 50
-		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
-			parsed, err := strconv.Atoi(raw)
-			if err != nil || parsed <= 0 {
-				WriteError(w, http.StatusBadRequest, "invalid_limit", "limit must be positive")
-				return
-			}
-			limit = parsed
+		limit, err := parseBoundedPositiveLimit(r.URL.Query().Get("limit"), 50, 200)
+		if err != nil {
+			WriteError(w, http.StatusBadRequest, "invalid_limit", err.Error())
+			return
 		}
 		results, err := engine.ListResults(r.Context(), limit)
 		if err != nil {
@@ -1160,6 +1184,21 @@ func decodeJSONBody(r *http.Request, out any) error {
 	return nil
 }
 
+func parseBoundedPositiveLimit(raw string, defaultLimit int, maxLimit int) (int, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return defaultLimit, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf("limit must be positive")
+	}
+	if maxLimit > 0 && parsed > maxLimit {
+		return maxLimit, nil
+	}
+	return parsed, nil
+}
+
 func logAuditEntry(r *http.Request, logger *audit.Logger, entry audit.Entry) {
 	if logger == nil {
 		return
@@ -1198,6 +1237,10 @@ func requestActor(r *http.Request) string {
 }
 
 func requireRoleForMutation(w http.ResponseWriter, r *http.Request, requiredRole string) bool {
+	return requireRole(w, r, requiredRole)
+}
+
+func requireRole(w http.ResponseWriter, r *http.Request, requiredRole string) bool {
 	identity, ok := IdentityFromContext(r.Context())
 	if !ok {
 		if AuthEnforcedFromContext(r.Context()) {

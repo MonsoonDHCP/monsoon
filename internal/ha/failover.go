@@ -14,6 +14,7 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/events"
 	"github.com/monsoondhcp/monsoon/internal/lease"
 	"github.com/monsoondhcp/monsoon/internal/metrics"
+	"github.com/monsoondhcp/monsoon/internal/storage"
 )
 
 type Status struct {
@@ -61,6 +62,8 @@ type Manager struct {
 	syncLag             time.Duration
 	failoverCount       int64
 	snapshotDone        bool
+	syncSequence        int64
+	appliedSequence     int64
 	fenced              bool
 	fencingReason       string
 	witnessOwner        string
@@ -103,7 +106,7 @@ func NewManager(cfg Config, store lease.Store, broker *events.Broker, registry *
 	if node == "" {
 		node = "monsoon"
 	}
-	return &Manager{
+	manager := &Manager{
 		node:        node,
 		mode:        normalizeMode(cfg.Mode),
 		priority:    priority,
@@ -121,6 +124,10 @@ func NewManager(cfg Config, store lease.Store, broker *events.Broker, registry *
 		role:        RolePrimary,
 		peer:        PeerStateUnknown,
 	}
+	if provider, ok := store.(interface{ CurrentSequence() int64 }); ok {
+		manager.syncSequence = provider.CurrentSequence()
+	}
+	return manager
 }
 
 func (m *Manager) Start(ctx context.Context) error {
@@ -132,7 +139,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	go m.acceptLoop(ctx)
 	go m.heartbeatLoop(ctx)
 	go m.watchdogLoop(ctx)
-	if m.leaseSync && m.broker != nil {
+	if m.leaseSync {
 		go m.leaseSyncLoop(ctx)
 	}
 	m.refreshWitnessState()
@@ -217,6 +224,40 @@ func (m *Manager) TriggerManualFailover(reason string) (Status, error) {
 	return status, nil
 }
 
+func (m *Manager) AllocationScope(_ string, start, end uint32) (uint32, uint32, bool) {
+	if start > end {
+		return 0, 0, false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.fenced {
+		return 0, 0, false
+	}
+	mode := normalizeMode(m.mode)
+	switch mode {
+	case "load-sharing":
+		if m.peer != PeerStateConnected {
+			return start, end, true
+		}
+		lowerStart, lowerEnd, upperStart, upperEnd := splitScope(start, end)
+		if m.role == RolePrimary {
+			return lowerStart, lowerEnd, true
+		}
+		if m.role == RoleSecondary {
+			if upperStart > upperEnd {
+				return 0, 0, false
+			}
+			return upperStart, upperEnd, true
+		}
+		return 0, 0, false
+	default:
+		if m.role != RolePrimary {
+			return 0, 0, false
+		}
+		return start, end, true
+	}
+}
+
 func (m *Manager) acceptLoop(ctx context.Context) {
 	for {
 		conn, err := m.listener.Accept()
@@ -266,7 +307,7 @@ func (m *Manager) handleConn(ctx context.Context, conn net.Conn) {
 			Timestamp: time.Now().UTC(),
 			Secret:    m.secret,
 		})
-	case "snapshot_request", "lease_upsert", "lease_delete":
+	case "snapshot_request", "snapshot_push", "lease_upsert", "lease_delete":
 		var msg syncMessage
 		if json.Unmarshal(raw, &msg) != nil {
 			return
@@ -282,20 +323,49 @@ func (m *Manager) handleConn(ctx context.Context, conn net.Conn) {
 				Node:      m.node,
 				Secret:    m.secret,
 				Timestamp: time.Now().UTC(),
+				Sequence:  m.currentSyncSequence(),
 				Leases:    leases,
 			})
+		case "snapshot_push":
+			if err := m.applySnapshot(ctx, msg.Leases); err == nil {
+				m.markSnapshotDone(msg.Sequence)
+				m.updateSyncLag(time.Since(msg.Timestamp))
+			}
+			_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
 		case "lease_upsert":
+			apply, resync := m.classifyIncrementalSequence(msg.Sequence)
+			if resync {
+				_ = writeSyncMessage(conn, syncMessage{Type: "resync_required", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
+				return
+			}
+			if !apply {
+				_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
+				return
+			}
 			if m.store != nil && msg.Lease != nil {
-				_ = m.store.Upsert(ctx, *msg.Lease)
-				m.updateSyncLag(time.Since(msg.Timestamp))
+				if err := m.upsertLeaseReplica(ctx, *msg.Lease); err == nil {
+					m.setAppliedSequence(msg.Sequence)
+					m.updateSyncLag(time.Since(msg.Timestamp))
+				}
 			}
-			_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC()})
+			_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
 		case "lease_delete":
-			if m.store != nil && strings.TrimSpace(msg.DeleteIP) != "" {
-				_ = m.store.Delete(ctx, msg.DeleteIP)
-				m.updateSyncLag(time.Since(msg.Timestamp))
+			apply, resync := m.classifyIncrementalSequence(msg.Sequence)
+			if resync {
+				_ = writeSyncMessage(conn, syncMessage{Type: "resync_required", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
+				return
 			}
-			_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC()})
+			if !apply {
+				_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
+				return
+			}
+			if m.store != nil && strings.TrimSpace(msg.DeleteIP) != "" {
+				if err := m.deleteLeaseReplica(ctx, msg.DeleteIP); err == nil {
+					m.setAppliedSequence(msg.Sequence)
+					m.updateSyncLag(time.Since(msg.Timestamp))
+				}
+			}
+			_ = writeSyncMessage(conn, syncMessage{Type: "ack", Secret: m.secret, Timestamp: time.Now().UTC(), Sequence: msg.Sequence})
 		}
 	}
 }
@@ -332,7 +402,7 @@ func (m *Manager) heartbeatLoop(ctx context.Context) {
 			m.recordHeartbeat(resp.Node, latency)
 			m.applyElection(resp.Node, resp.Priority, resp.Draining)
 			m.refreshWitnessState()
-			if m.leaseSync && m.currentRole() == RoleSecondary && !m.snapshotApplied() {
+			if m.leaseSync && m.shouldRequestSnapshot() && !m.snapshotApplied() {
 				if err := m.requestSnapshot(ctx); err != nil {
 					log.Printf("ha snapshot request failed: %v", err)
 				}
@@ -356,6 +426,7 @@ func (m *Manager) watchdogLoop(ctx context.Context) {
 				m.peer = PeerStateDisconnected
 				m.peerNode = ""
 				m.snapshotDone = false
+				m.appliedSequence = 0
 				m.manualStepDownUntil = time.Time{}
 				if role != RolePrimary {
 					if m.canPromoteLocked(time.Now().UTC()) {
@@ -378,6 +449,39 @@ func (m *Manager) watchdogLoop(ctx context.Context) {
 }
 
 func (m *Manager) leaseSyncLoop(ctx context.Context) {
+	if source, ok := m.store.(interface {
+		WatchMutations() (int64, <-chan lease.MutationEvent, func())
+	}); ok {
+		_, ch, unsubscribe := source.WatchMutations()
+		defer unsubscribe()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case evt, ok := <-ch:
+				if !ok {
+					return
+				}
+				if !m.shouldReplicateLocalChanges() {
+					continue
+				}
+				m.observeSyncSequence(evt.Sequence)
+				switch evt.Op {
+				case storage.OpPut:
+					if evt.Lease != nil {
+						_ = m.pushLeaseUpdateWithSequence(ctx, evt.Sequence, *evt.Lease)
+					}
+				case storage.OpDel:
+					if strings.TrimSpace(evt.IP) != "" {
+						_ = m.pushLeaseDeleteWithSequence(ctx, evt.Sequence, evt.IP)
+					}
+				}
+			}
+		}
+	}
+	if m.broker == nil {
+		return
+	}
 	_, ch, unsubscribe := m.broker.Subscribe()
 	defer unsubscribe()
 	for {
@@ -391,7 +495,7 @@ func (m *Manager) leaseSyncLoop(ctx context.Context) {
 			if !strings.HasPrefix(evt.Type, "lease.") {
 				continue
 			}
-			if m.currentRole() != RolePrimary || m.currentPeerState() != PeerStateConnected {
+			if !m.shouldReplicateLocalChanges() {
 				continue
 			}
 			ip := ""
@@ -425,10 +529,28 @@ func (m *Manager) isManualStepDownActive() bool {
 	return !m.manualStepDownUntil.IsZero() && time.Now().UTC().Before(m.manualStepDownUntil)
 }
 
-func (m *Manager) currentPeerState() PeerState {
+func (m *Manager) shouldRequestSnapshot() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.peer
+	if m.peer != PeerStateConnected {
+		return false
+	}
+	if normalizeMode(m.mode) == "load-sharing" {
+		return true
+	}
+	return m.role == RoleSecondary
+}
+
+func (m *Manager) shouldReplicateLocalChanges() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.peer != PeerStateConnected || m.fenced {
+		return false
+	}
+	if normalizeMode(m.mode) == "load-sharing" {
+		return m.role == RolePrimary || m.role == RoleSecondary
+	}
+	return m.role == RolePrimary
 }
 
 func (m *Manager) snapshotApplied() bool {
@@ -437,10 +559,90 @@ func (m *Manager) snapshotApplied() bool {
 	return m.snapshotDone
 }
 
-func (m *Manager) markSnapshotDone() {
+func (m *Manager) markSnapshotDone(seq int64) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.snapshotDone = true
+	if seq > m.appliedSequence {
+		m.appliedSequence = seq
+	}
+}
+
+func (m *Manager) nextSyncSequence() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.syncSequence++
+	return m.syncSequence
+}
+
+func (m *Manager) currentSyncSequence() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.syncSequence
+}
+
+func (m *Manager) setAppliedSequence(seq int64) {
+	if seq <= 0 {
+		return
+	}
+	m.mu.Lock()
+	if seq > m.appliedSequence {
+		m.appliedSequence = seq
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) observeSyncSequence(seq int64) {
+	if seq <= 0 {
+		return
+	}
+	m.mu.Lock()
+	if seq > m.syncSequence {
+		m.syncSequence = seq
+	}
+	m.mu.Unlock()
+}
+
+func (m *Manager) classifyIncrementalSequence(seq int64) (apply bool, resync bool) {
+	if seq <= 0 {
+		return true, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch {
+	case m.appliedSequence == 0 && seq == 1:
+		return true, false
+	case m.appliedSequence == 0 && seq > 1:
+		m.snapshotDone = false
+		m.appliedSequence = 0
+		return false, true
+	case seq <= m.appliedSequence:
+		return false, false
+	case seq == m.appliedSequence+1:
+		return true, false
+	default:
+		m.snapshotDone = false
+		m.appliedSequence = 0
+		return false, true
+	}
+}
+
+func (m *Manager) upsertLeaseReplica(ctx context.Context, item lease.Lease) error {
+	if source, ok := m.store.(interface {
+		UpsertSilent(context.Context, lease.Lease) error
+	}); ok {
+		return source.UpsertSilent(ctx, item)
+	}
+	return m.store.Upsert(ctx, item)
+}
+
+func (m *Manager) deleteLeaseReplica(ctx context.Context, ip string) error {
+	if source, ok := m.store.(interface {
+		DeleteSilent(context.Context, string) error
+	}); ok {
+		return source.DeleteSilent(ctx, ip)
+	}
+	return m.store.Delete(ctx, ip)
 }
 
 func (m *Manager) recordHeartbeat(peerNode string, latency time.Duration) {
@@ -460,6 +662,7 @@ func (m *Manager) markPeerDisconnected() {
 	m.peer = PeerStateDisconnected
 	m.peerNode = ""
 	m.snapshotDone = false
+	m.appliedSequence = 0
 	m.manualStepDownUntil = time.Time{}
 	m.mu.Unlock()
 	m.refreshMetrics()
@@ -628,4 +831,20 @@ func maxDuration(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+func splitScope(start, end uint32) (lowerStart, lowerEnd, upperStart, upperEnd uint32) {
+	if start > end {
+		return 0, 0, 1, 0
+	}
+	span := uint64(end-start) + 1
+	lowerCount := uint32((span + 1) / 2)
+	lowerStart = start
+	lowerEnd = start + lowerCount - 1
+	if lowerEnd >= end {
+		return lowerStart, lowerEnd, 1, 0
+	}
+	upperStart = lowerEnd + 1
+	upperEnd = end
+	return lowerStart, lowerEnd, upperStart, upperEnd
 }

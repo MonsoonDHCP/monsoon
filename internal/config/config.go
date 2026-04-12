@@ -78,13 +78,12 @@ type SubnetConfig struct {
 }
 
 type SubnetDHCPConfig struct {
-	Enabled      bool              `yaml:"enabled"`
-	PoolStart    string            `yaml:"pool_start"`
-	PoolEnd      string            `yaml:"pool_end"`
-	LeaseTime    Duration          `yaml:"lease_time"`
-	MaxLeaseTime Duration          `yaml:"max_lease_time"`
-	Options      SubnetOptions     `yaml:"options"`
-	Classify     map[string]string `yaml:"classifications"`
+	Enabled      bool          `yaml:"enabled"`
+	PoolStart    string        `yaml:"pool_start"`
+	PoolEnd      string        `yaml:"pool_end"`
+	LeaseTime    Duration      `yaml:"lease_time"`
+	MaxLeaseTime Duration      `yaml:"max_lease_time"`
+	Options      SubnetOptions `yaml:"options"`
 }
 
 type SubnetOptions struct {

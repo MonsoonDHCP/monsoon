@@ -103,18 +103,6 @@ func (m *SessionManager) RevokeByUsername(_ context.Context, username string) in
 	return revoked
 }
 
-func (m *SessionManager) CleanupExpired() {
-	now := time.Now().UTC()
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for id, entry := range m.sessions {
-		if now.After(entry.ExpiresAt) {
-			delete(m.sessions, id)
-			m.deleteSession(id)
-		}
-	}
-}
-
 func (m *SessionManager) load() {
 	if m.store == nil {
 		return

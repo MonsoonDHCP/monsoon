@@ -28,16 +28,3 @@ func ParseRelayAgentInfo(raw []byte) RelayInfo {
 	}
 	return info
 }
-
-func BuildRelayAgentInfo(circuitID, remoteID string) []byte {
-	out := make([]byte, 0, len(circuitID)+len(remoteID)+4)
-	if circuitID != "" {
-		out = append(out, 1, byte(len(circuitID)))
-		out = append(out, []byte(circuitID)...)
-	}
-	if remoteID != "" {
-		out = append(out, 2, byte(len(remoteID)))
-		out = append(out, []byte(remoteID)...)
-	}
-	return out
-}

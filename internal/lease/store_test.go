@@ -115,3 +115,118 @@ func TestStoreSecondaryIndexesAndDelete(t *testing.T) {
 		t.Fatalf("client index after delete = %#v, err = %v", byClient, err)
 	}
 }
+
+func TestStoreWatchMutations(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := storage.OpenEngine(filepath.Join(dir, "storage"), []string{
+		"leases", "leases_by_mac", "leases_by_expiry", "leases_by_subnet", "leases_by_client",
+	})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	defer eng.Close()
+
+	store := NewStore(eng)
+	_, ch, unsubscribe := store.WatchMutations()
+	defer unsubscribe()
+
+	now := time.Now().UTC()
+	item := Lease{
+		IP:         "10.0.3.10",
+		MAC:        "AA:BB:CC:DD:EE:33",
+		State:      StateBound,
+		SubnetID:   "10.0.3.0/24",
+		StartTime:  now,
+		Duration:   time.Hour,
+		ExpiryTime: now.Add(time.Hour),
+	}
+	if err := store.Upsert(context.Background(), item); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+
+	var putEvent MutationEvent
+	select {
+	case putEvent = <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for put mutation event")
+	}
+	if putEvent.Op != storage.OpPut || putEvent.Sequence != 1 {
+		t.Fatalf("unexpected put event %#v", putEvent)
+	}
+	if putEvent.Lease == nil || putEvent.Lease.IP != item.IP {
+		t.Fatalf("unexpected put lease %#v", putEvent.Lease)
+	}
+
+	if err := store.Delete(context.Background(), item.IP); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	var delEvent MutationEvent
+	select {
+	case delEvent = <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for delete mutation event")
+	}
+	if delEvent.Op != storage.OpDel || delEvent.Sequence != 2 || delEvent.IP != item.IP {
+		t.Fatalf("unexpected delete event %#v", delEvent)
+	}
+	if delEvent.Lease != nil {
+		t.Fatalf("expected delete event not to carry lease payload")
+	}
+}
+
+func TestStoreSilentMutationsDoNotNotifyWatchersOrAdvanceSequence(t *testing.T) {
+	dir := t.TempDir()
+	eng, err := storage.OpenEngine(filepath.Join(dir, "storage"), []string{
+		"leases", "leases_by_mac", "leases_by_expiry", "leases_by_subnet", "leases_by_client",
+	})
+	if err != nil {
+		t.Fatalf("open engine: %v", err)
+	}
+	defer eng.Close()
+
+	store := NewStore(eng)
+	_, ch, unsubscribe := store.WatchMutations()
+	defer unsubscribe()
+
+	now := time.Now().UTC()
+	item := Lease{
+		IP:         "10.0.4.10",
+		MAC:        "AA:BB:CC:DD:EE:44",
+		State:      StateBound,
+		SubnetID:   "10.0.4.0/24",
+		StartTime:  now,
+		Duration:   time.Hour,
+		ExpiryTime: now.Add(time.Hour),
+	}
+	if err := store.UpsertSilent(context.Background(), item); err != nil {
+		t.Fatalf("UpsertSilent() error = %v", err)
+	}
+	if eng.CurrentSequence() != 0 {
+		t.Fatalf("expected silent upsert not to advance engine sequence, got %d", eng.CurrentSequence())
+	}
+	select {
+	case evt := <-ch:
+		t.Fatalf("expected no watcher event for silent upsert, got %#v", evt)
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	got, err := store.GetByIP(context.Background(), item.IP)
+	if err != nil || got.MAC != item.MAC {
+		t.Fatalf("GetByIP() after silent upsert = %+v, err = %v", got, err)
+	}
+
+	if err := store.DeleteSilent(context.Background(), item.IP); err != nil {
+		t.Fatalf("DeleteSilent() error = %v", err)
+	}
+	if eng.CurrentSequence() != 0 {
+		t.Fatalf("expected silent delete not to advance engine sequence, got %d", eng.CurrentSequence())
+	}
+	select {
+	case evt := <-ch:
+		t.Fatalf("expected no watcher event for silent delete, got %#v", evt)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if _, err := store.GetByIP(context.Background(), item.IP); err == nil {
+		t.Fatal("expected lease to be deleted by silent delete")
+	}
+}

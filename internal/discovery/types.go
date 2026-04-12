@@ -46,6 +46,7 @@ type Conflict struct {
 type RogueServer struct {
 	IP       string    `json:"ip"`
 	MAC      string    `json:"mac,omitempty"`
+	Vendor   string    `json:"vendor,omitempty"`
 	Source   string    `json:"source,omitempty"`
 	Detected time.Time `json:"detected"`
 }
@@ -53,6 +54,7 @@ type RogueServer struct {
 type ObservedHost struct {
 	IP       string    `json:"ip"`
 	MAC      string    `json:"mac,omitempty"`
+	Vendor   string    `json:"vendor,omitempty"`
 	Hostname string    `json:"hostname,omitempty"`
 	Subnet   string    `json:"subnet,omitempty"`
 	State    string    `json:"state"`

@@ -24,6 +24,7 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/audit"
 	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/config"
+	"github.com/monsoondhcp/monsoon/internal/ddns"
 	"github.com/monsoondhcp/monsoon/internal/dhcpv4"
 	"github.com/monsoondhcp/monsoon/internal/dhcpv6"
 	"github.com/monsoondhcp/monsoon/internal/discovery"
@@ -273,9 +274,11 @@ func run() int {
 	if quarantine <= 0 {
 		quarantine = 15 * time.Minute
 	}
+	queueDDNS := func(ddns.Action, lease.Lease) {}
 	sweeper := lease.NewSweeper(leaseStore, 30*time.Second, quarantine, func(item lease.Lease) {
 		switch item.State {
 		case lease.StateExpired:
+			queueDDNS(ddns.ActionDelete, item)
 			eventBroker.Publish(events.Event{
 				Type: "lease.expired",
 				Data: map[string]any{
@@ -292,12 +295,84 @@ func run() int {
 	runCtx, cancelRun := context.WithCancel(context.Background())
 	defer cancelRun()
 
+	var ddnsQueue chan ddns.Request
+	if cfg.DHCP.DDNS.Enabled {
+		client, err := ddns.NewClient(ddns.Config{
+			ServerAddr:    cfg.DHCP.DDNS.DNSServer,
+			ForwardZone:   cfg.DHCP.DDNS.ForwardZone,
+			ReverseZone:   cfg.DHCP.DDNS.ReverseZone,
+			TSIGKey:       cfg.DHCP.DDNS.TSIGKey,
+			TSIGSecret:    cfg.DHCP.DDNS.TSIGSecret,
+			TSIGAlgorithm: cfg.DHCP.DDNS.TSIGAlgorithm,
+			Timeout:       3 * time.Second,
+		})
+		if err != nil {
+			log.Printf("ddns init failed: %v", err)
+			return 1
+		}
+		ddnsQueue = make(chan ddns.Request, 128)
+		go func() {
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case req, ok := <-ddnsQueue:
+					if !ok {
+						return
+					}
+					var err error
+					switch req.Action {
+					case ddns.ActionUpsert:
+						err = client.Apply(runCtx, req.Lease)
+					case ddns.ActionDelete:
+						err = client.Delete(runCtx, req.Lease)
+					}
+					if err != nil {
+						log.Printf("ddns %s failed for %s (%s): %v", req.Action, req.Lease.IP, req.Lease.Hostname, err)
+					}
+				}
+			}
+		}()
+	}
+	queueDDNS = func(action ddns.Action, item lease.Lease) {
+		if ddnsQueue == nil {
+			return
+		}
+		select {
+		case ddnsQueue <- ddns.Request{Action: action, Lease: item.Clone()}:
+		default:
+			log.Printf("ddns queue full, dropping update for %s", item.IP)
+		}
+	}
+
 	if cfg.IPAM.Discovery.Enabled {
 		discoveryEngine.Start(runCtx)
+		if cfg.IPAM.Discovery.RogueDHCPDetection {
+			rogueDetector := discovery.NewRogueDetector(configuredDHCPServers(cfg), func(item discovery.RogueServer) {
+				if err := discoveryEngine.RecordRogueServer(runCtx, item); err != nil {
+					log.Printf("discovery rogue persistence failed: %v", err)
+					return
+				}
+				eventBroker.Publish(events.Event{
+					Type: "discovery.rogue_dhcp",
+					Data: map[string]any{
+						"ip":       item.IP,
+						"mac":      item.MAC,
+						"vendor":   item.Vendor,
+						"source":   item.Source,
+						"detected": item.Detected,
+					},
+				})
+			})
+			if err := rogueDetector.Start(runCtx); err != nil {
+				log.Printf("rogue dhcp detector disabled: %v", err)
+			}
+		}
 	}
 
 	dhcpErr := make(chan error, 1)
 	var dhcpServer *dhcpv4.Server
+	var dhcpPools *dhcpv4.PoolManager
 	dhcpStarted := false
 	if cfg.DHCP.V4.Enabled {
 		pools, err := dhcpv4.NewPoolManager(cfg.Subnets, cfg.DHCP.DefaultLeaseTime.Duration, leaseStore)
@@ -305,6 +380,7 @@ func run() int {
 			log.Printf("dhcpv4 pool init failed: %v", err)
 			return 1
 		}
+		dhcpPools = pools
 		handler := dhcpv4.NewHandler(
 			leaseStore,
 			pools,
@@ -325,13 +401,15 @@ func run() int {
 					data["remaining"] = remaining.String()
 				}
 			}
+			switch eventType {
+			case "lease.created", "lease.renewed":
+				queueDDNS(ddns.ActionUpsert, item)
+			case "lease.released":
+				queueDDNS(ddns.ActionDelete, item)
+			}
 			eventBroker.Publish(events.Event{Type: eventType, Data: data})
 		})
 		dhcpServer = dhcpv4.NewServer(cfg.DHCP.V4.Listen, handler)
-		go func() {
-			dhcpErr <- dhcpServer.Start(runCtx)
-		}()
-		dhcpStarted = true
 	}
 	dhcpV6Err := make(chan error, 1)
 	var dhcpV6Server *dhcpv6.Server
@@ -356,6 +434,12 @@ func run() int {
 			data := map[string]any{
 				"ip":     item.IP,
 				"subnet": item.SubnetID,
+			}
+			switch eventType {
+			case "lease.created", "lease.renewed":
+				queueDDNS(ddns.ActionUpsert, item)
+			case "lease.released":
+				queueDDNS(ddns.ActionDelete, item)
 			}
 			eventBroker.Publish(events.Event{Type: eventType, Data: data})
 		})
@@ -385,6 +469,15 @@ func run() int {
 			log.Printf("ha manager startup failed: %v", err)
 			return 1
 		}
+	}
+	if dhcpPools != nil && haManager != nil {
+		dhcpPools.SetScopeProvider(haManager)
+	}
+	if dhcpServer != nil {
+		go func() {
+			dhcpErr <- dhcpServer.Start(runCtx)
+		}()
+		dhcpStarted = true
 	}
 	var wsHub *wsapi.Hub
 	if cfg.API.WebSocket.Enabled {
@@ -895,6 +988,62 @@ func pickServerDUID(cfg *config.Config) []byte {
 	uuid[6] = (uuid[6] & 0x0f) | 0x40
 	uuid[8] = (uuid[8] & 0x3f) | 0x80
 	return dhcpv6.GenerateDUIDUUID(uuid)
+}
+
+func configuredDHCPServers(cfg *config.Config) []string {
+	servers := []string{}
+	if ip := pickServerIdentifier(cfg); ip != nil {
+		servers = append(servers, ip.String())
+	}
+	servers = append(servers, localIPv4Addrs()...)
+	return uniqueStrings(servers)
+}
+
+func localIPv4Addrs() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, 8)
+	for _, iface := range interfaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch item := addr.(type) {
+			case *net.IPNet:
+				ip = item.IP
+			case *net.IPAddr:
+				ip = item.IP
+			}
+			if ip == nil {
+				continue
+			}
+			if v4 := ip.To4(); v4 != nil {
+				out = append(out, v4.String())
+			}
+		}
+	}
+	return out
+}
+
+func uniqueStrings(items []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
+	}
+	return out
 }
 
 func printMigrationReport(report migrate.Report) {

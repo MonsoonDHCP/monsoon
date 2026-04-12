@@ -137,6 +137,29 @@ func TestHubRejectsMissingIdentityWhenAuthIsEnforced(t *testing.T) {
 	}
 }
 
+func TestClientSendAfterCloseDoesNotPanic(t *testing.T) {
+	serverConn, clientConn := net.Pipe()
+	defer serverConn.Close()
+
+	client := &Client{
+		conn:          clientConn,
+		reader:        bufio.NewReader(clientConn),
+		writer:        bufio.NewWriter(clientConn),
+		send:          make(chan EventMessage, 1),
+		subscriptions: []string{"*"},
+		done:          make(chan struct{}),
+	}
+	client.Close()
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("Send() panicked after Close(): %v", r)
+		}
+	}()
+
+	client.Send(EventMessage{Type: "lease.released"})
+}
+
 func mustDialWebSocket(t *testing.T, serverURL string) (net.Conn, *bufio.Reader) {
 	t.Helper()
 	status, conn, reader := dialWebSocketHandshake(t, serverURL, nil)

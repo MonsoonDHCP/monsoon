@@ -2,6 +2,7 @@ package dhcpv6
 
 import (
 	"bytes"
+	"encoding/binary"
 	"net"
 	"testing"
 	"time"
@@ -65,7 +66,11 @@ func TestRelayPacketRoundTrip(t *testing.T) {
 
 func TestOptionsAndDUIDHelpers(t *testing.T) {
 	mac, _ := net.ParseMAC("aa:bb:cc:dd:ee:ff")
-	duid := GenerateDUIDLLT(1, mac, time.Unix(1710000000, 0))
+	duid := make([]byte, 8+len(mac))
+	binary.BigEndian.PutUint16(duid[0:2], DUIDTypeLLT)
+	binary.BigEndian.PutUint16(duid[2:4], 1)
+	binary.BigEndian.PutUint32(duid[4:8], duidTime(time.Unix(1710000000, 0)))
+	copy(duid[8:], mac)
 	parsed, err := ParseDUID(duid)
 	if err != nil {
 		t.Fatalf("ParseDUID() error = %v", err)
@@ -103,11 +108,19 @@ func TestOptionsAndDUIDHelpers(t *testing.T) {
 	if !decoded.HasRapidCommit() {
 		t.Fatalf("expected rapid commit")
 	}
-	if got := decoded.DomainList(); len(got) != 1 || got[0] != "example.internal" {
+	domainRaw, ok := decoded.Get(OptionDomainList)
+	if !ok {
+		t.Fatal("expected domain list option")
+	}
+	if got := decodeDomainList(domainRaw); len(got) != 1 || got[0] != "example.internal" {
 		t.Fatalf("unexpected domain list: %#v", got)
 	}
-	if got := decoded.DNSServers(); len(got) != 1 || !got[0].Equal(net.ParseIP("2001:4860:4860::8888")) {
-		t.Fatalf("unexpected dns servers: %#v", got)
+	dnsRaw, ok := decoded.Get(OptionDNSServers)
+	if !ok || len(dnsRaw) != 16 {
+		t.Fatalf("unexpected raw dns option: %v len=%d", ok, len(dnsRaw))
+	}
+	if got := net.IP(dnsRaw[:16]); !got.Equal(net.ParseIP("2001:4860:4860::8888")) {
+		t.Fatalf("unexpected dns server: %s", got)
 	}
 	if got := decoded.IANAs(); len(got) != 1 || got[0].IAID != 1234 {
 		t.Fatalf("unexpected iana values: %#v", got)

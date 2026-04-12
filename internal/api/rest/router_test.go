@@ -730,9 +730,10 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 		ConfigSnapshot: func() any {
 			return map[string]any{
 				"auth": map[string]any{
-					"enabled":  true,
-					"password": "top-secret",
-					"token":    "visible-value",
+					"enabled":       true,
+					"password":      "top-secret",
+					"token":         "visible-value",
+					"client_secret": "oauth-secret",
 				},
 			}
 		},
@@ -788,6 +789,12 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 	if !bytes.Contains(configRR.Body.Bytes(), []byte(`"password":"***"`)) {
 		t.Fatalf("expected masked password in config response: %s", configRR.Body.String())
 	}
+	if !bytes.Contains(configRR.Body.Bytes(), []byte(`"token":"***"`)) {
+		t.Fatalf("expected masked token in config response: %s", configRR.Body.String())
+	}
+	if bytes.Contains(configRR.Body.Bytes(), []byte("visible-value")) || bytes.Contains(configRR.Body.Bytes(), []byte("oauth-secret")) {
+		t.Fatalf("expected secrets to be removed from config response: %s", configRR.Body.String())
+	}
 	configMeta := decodeResponseMetaMap(t, configRR.Body.Bytes())
 	if _, ok := configMeta["reload"].(map[string]any); !ok {
 		t.Fatalf("expected reload metadata in config response: %#v", configMeta)
@@ -801,6 +808,9 @@ func TestSystemRoutesInfoConfigAndBackups(t *testing.T) {
 	}
 	if exportRR.Body.Len() == 0 {
 		t.Fatalf("expected export body")
+	}
+	if bytes.Contains(exportRR.Body.Bytes(), []byte("visible-value")) || bytes.Contains(exportRR.Body.Bytes(), []byte("oauth-secret")) {
+		t.Fatalf("expected secrets to be removed from export response: %s", exportRR.Body.String())
 	}
 
 	updateRR := httptest.NewRecorder()
@@ -896,6 +906,91 @@ func TestSystemHealthAndReadyRoutesReflectReadiness(t *testing.T) {
 	if readyRR.Code != http.StatusServiceUnavailable {
 		t.Fatalf("ready status mismatch: got %d body=%s", readyRR.Code, readyRR.Body.String())
 	}
+}
+
+func TestSystemSensitiveReadsRequireAdminWhenAuthIsEnforced(t *testing.T) {
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "storage"), []string{"audit"})
+	if err != nil {
+		t.Fatalf("open storage: %v", err)
+	}
+	defer eng.Close()
+
+	mux := http.NewServeMux()
+	if err := RegisterRoutes(mux, RouterDeps{
+		Version:     "test",
+		AuditLogger: audit.NewLogger(eng),
+		ConfigSnapshot: func() any {
+			return map[string]any{
+				"auth": map[string]any{"token": "visible-value"},
+			}
+		},
+		ListBackups: func(context.Context) ([]SystemBackup, error) {
+			return []SystemBackup{{
+				Name:      "monsoon-existing.snapshot",
+				Path:      "/tmp/monsoon-existing.snapshot",
+				SizeBytes: 654,
+				CreatedAt: time.Now().UTC(),
+			}}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register routes failed: %v", err)
+	}
+
+	viewerCtx := WithIdentity(context.Background(), auth.Identity{Username: "viewer", Role: auth.DefaultRoleViewer})
+	viewerCtx = WithAuthEnforcement(viewerCtx, true)
+	adminCtx := WithIdentity(context.Background(), auth.Identity{Username: "admin", Role: auth.DefaultRoleAdmin})
+	adminCtx = WithAuthEnforcement(adminCtx, true)
+
+	for _, tc := range []string{
+		"/api/v1/system/config",
+		"/api/v1/system/config/export?format=json",
+		"/api/v1/system/backups",
+		"/api/v1/audit",
+	} {
+		t.Run(tc, func(t *testing.T) {
+			viewerRR := httptest.NewRecorder()
+			viewerReq := httptest.NewRequest(http.MethodGet, tc, nil).WithContext(viewerCtx)
+			mux.ServeHTTP(viewerRR, viewerReq)
+			if viewerRR.Code != http.StatusForbidden {
+				t.Fatalf("expected viewer request to be forbidden for %s, got %d body=%s", tc, viewerRR.Code, viewerRR.Body.String())
+			}
+
+			adminRR := httptest.NewRecorder()
+			adminReq := httptest.NewRequest(http.MethodGet, tc, nil).WithContext(adminCtx)
+			mux.ServeHTTP(adminRR, adminReq)
+			if adminRR.Code != http.StatusOK {
+				t.Fatalf("expected admin request to succeed for %s, got %d body=%s", tc, adminRR.Code, adminRR.Body.String())
+			}
+		})
+	}
+}
+
+func TestParseBoundedPositiveLimit(t *testing.T) {
+	t.Run("uses default when empty", func(t *testing.T) {
+		limit, err := parseBoundedPositiveLimit("", 100, 500)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if limit != 100 {
+			t.Fatalf("expected default limit 100, got %d", limit)
+		}
+	})
+
+	t.Run("rejects non-positive values", func(t *testing.T) {
+		if _, err := parseBoundedPositiveLimit("0", 100, 500); err == nil {
+			t.Fatalf("expected zero limit to be rejected")
+		}
+	})
+
+	t.Run("caps oversized values", func(t *testing.T) {
+		limit, err := parseBoundedPositiveLimit("5000", 100, 500)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if limit != 500 {
+			t.Fatalf("expected limit cap 500, got %d", limit)
+		}
+	})
 }
 
 func TestSystemReadyRouteReturnsOKWhenCoreComponentsAreReady(t *testing.T) {

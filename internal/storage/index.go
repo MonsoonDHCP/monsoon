@@ -32,13 +32,6 @@ func (m *IndexManager) Create(name string, fn IndexFunc) error {
 	return nil
 }
 
-func (m *IndexManager) Drop(name string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	delete(m.indexes, name)
-	delete(m.trees, name)
-}
-
 func (m *IndexManager) Update(primaryKey, oldValue, newValue []byte) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -142,19 +142,6 @@ func (o *Options) SetRapidCommit() {
 	o.Set(OptionRapidCommit, nil)
 }
 
-func (o Options) DNSServers() []net.IP {
-	value, ok := o.Get(OptionDNSServers)
-	if !ok || len(value)%16 != 0 {
-		return nil
-	}
-	out := make([]net.IP, 0, len(value)/16)
-	for len(value) >= 16 {
-		out = append(out, append(net.IP(nil), value[:16]...))
-		value = value[16:]
-	}
-	return out
-}
-
 func (o *Options) SetDNSServers(ips []net.IP) {
 	buf := make([]byte, 0, len(ips)*16)
 	for _, ip := range ips {
@@ -165,14 +152,6 @@ func (o *Options) SetDNSServers(ips []net.IP) {
 		buf = append(buf, v6...)
 	}
 	o.Set(OptionDNSServers, buf)
-}
-
-func (o Options) DomainList() []string {
-	value, ok := o.Get(OptionDomainList)
-	if !ok {
-		return nil
-	}
-	return decodeDomainList(value)
 }
 
 func (o *Options) SetDomainList(domains []string) {
@@ -192,21 +171,6 @@ func (o Options) IANAs() []IANA {
 
 func (o *Options) AddIANA(item IANA) {
 	o.Add(OptionIANA, item.Encode())
-}
-
-func (o Options) IAPDs() []IAPD {
-	values := o.Values(OptionIAPD)
-	out := make([]IAPD, 0, len(values))
-	for _, value := range values {
-		if item, err := DecodeIAPD(value); err == nil {
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
-func (o *Options) AddIAPD(item IAPD) {
-	o.Add(OptionIAPD, item.Encode())
 }
 
 func (o *Options) SetStatus(code uint16, message string) {
@@ -276,73 +240,6 @@ func DecodeIAAddress(raw []byte) (IAAddress, error) {
 		Address:           append(net.IP(nil), raw[0:16]...),
 		PreferredLifetime: binary.BigEndian.Uint32(raw[16:20]),
 		ValidLifetime:     binary.BigEndian.Uint32(raw[20:24]),
-		Options:           opts,
-	}, nil
-}
-
-type IAPD struct {
-	IAID    uint32
-	T1      uint32
-	T2      uint32
-	Options Options
-}
-
-func (i IAPD) Encode() []byte {
-	buf := make([]byte, 12)
-	binary.BigEndian.PutUint32(buf[0:4], i.IAID)
-	binary.BigEndian.PutUint32(buf[4:8], i.T1)
-	binary.BigEndian.PutUint32(buf[8:12], i.T2)
-	opts, _ := i.Options.Encode()
-	return append(buf, opts...)
-}
-
-func DecodeIAPD(raw []byte) (IAPD, error) {
-	if len(raw) < 12 {
-		return IAPD{}, errors.New("iapd too short")
-	}
-	opts, err := DecodeOptions(raw[12:])
-	if err != nil {
-		return IAPD{}, err
-	}
-	return IAPD{
-		IAID:    binary.BigEndian.Uint32(raw[0:4]),
-		T1:      binary.BigEndian.Uint32(raw[4:8]),
-		T2:      binary.BigEndian.Uint32(raw[8:12]),
-		Options: opts,
-	}, nil
-}
-
-type IAPrefix struct {
-	PreferredLifetime uint32
-	ValidLifetime     uint32
-	PrefixLength      byte
-	Prefix            net.IP
-	Options           Options
-}
-
-func (i IAPrefix) Encode() []byte {
-	buf := make([]byte, 25)
-	binary.BigEndian.PutUint32(buf[0:4], i.PreferredLifetime)
-	binary.BigEndian.PutUint32(buf[4:8], i.ValidLifetime)
-	buf[8] = i.PrefixLength
-	copy(buf[9:25], i.Prefix.To16())
-	opts, _ := i.Options.Encode()
-	return append(buf, opts...)
-}
-
-func DecodeIAPrefix(raw []byte) (IAPrefix, error) {
-	if len(raw) < 25 {
-		return IAPrefix{}, errors.New("iaprefix too short")
-	}
-	opts, err := DecodeOptions(raw[25:])
-	if err != nil {
-		return IAPrefix{}, err
-	}
-	return IAPrefix{
-		PreferredLifetime: binary.BigEndian.Uint32(raw[0:4]),
-		ValidLifetime:     binary.BigEndian.Uint32(raw[4:8]),
-		PrefixLength:      raw[8],
-		Prefix:            append(net.IP(nil), raw[9:25]...),
 		Options:           opts,
 	}, nil
 }

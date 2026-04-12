@@ -12,6 +12,16 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/storage"
 )
 
+type staticScopeProvider struct {
+	start uint32
+	end   uint32
+	ok    bool
+}
+
+func (s staticScopeProvider) AllocationScope(_ string, _ uint32, _ uint32) (uint32, uint32, bool) {
+	return s.start, s.end, s.ok
+}
+
 func TestResponseTargetPreferenceOrder(t *testing.T) {
 	remote := &net.UDPAddr{IP: net.IPv4(192, 0, 2, 1), Port: 68}
 	resp := Packet{YIAddr: net.IPv4(10, 0, 0, 10)}
@@ -37,25 +47,8 @@ func TestResponseTargetPreferenceOrder(t *testing.T) {
 	}
 }
 
-func TestClassifierAndRelayHelpers(t *testing.T) {
-	classifier := NewClassifier([]ClassRule{
-		{Name: "phones", VendorClass: "phone*", Pool: "voice"},
-		{Name: "ops", MACPrefix: "AA:BB", UserClass: "ops", CircuitID: "edge-*", Pool: "ops"},
-	})
-	if got := classifier.Match(MatchContext{VendorClass: "Phone-X"}); got != "voice" {
-		t.Fatalf("vendor class match failed: %q", got)
-	}
-	if got := classifier.Match(MatchContext{MACPrefix: "aa:bb:cc:dd", UserClass: "OPS", CircuitID: "EDGE-01"}); got != "ops" {
-		t.Fatalf("compound classifier match failed: %q", got)
-	}
-	if got := classifier.Match(MatchContext{VendorClass: "unknown"}); got != "" {
-		t.Fatalf("unexpected classifier match: %q", got)
-	}
-	if !wildcardMatch("*", "anything") || !hasPrefixFold("AABB", "aa") || !equalFold("Hello", "hello") {
-		t.Fatalf("string helper matching failed")
-	}
-
-	raw := BuildRelayAgentInfo(" edge-1 ", " remote-7 ")
+func TestRelayHelpers(t *testing.T) {
+	raw := []byte{1, 8, ' ', 'e', 'd', 'g', 'e', '-', '1', ' ', 2, 10, ' ', 'r', 'e', 'm', 'o', 't', 'e', '-', '7', ' '}
 	info := ParseRelayAgentInfo(raw)
 	if info.CircuitID != "edge-1" || info.RemoteID != "remote-7" {
 		t.Fatalf("unexpected relay parse result: %+v", info)
@@ -156,13 +149,41 @@ func TestPoolManagerReuseRequestedIPAndRelaySelection(t *testing.T) {
 		t.Fatalf("expected relay subnet allocation, got %+v err=%v", relayed, err)
 	}
 
-	if OptionName(200) != "unknown" {
-		t.Fatalf("unknown option name mismatch")
-	}
 	if got := parseIPs([]string{"10.0.0.1", "bad", "10.0.0.2"}); len(got) != 2 {
 		t.Fatalf("expected only valid ipv4 entries, got %#v", got)
 	}
 	if back := uint32ToIPv4(ipv4ToUint32([4]byte{10, 1, 2, 3})); back.String() != "10.1.2.3" {
 		t.Fatalf("unexpected ipv4 round trip: %s", back)
+	}
+}
+
+func TestPoolManagerScopeProviderLimitsAllocationRange(t *testing.T) {
+	pm, err := NewPoolManager([]config.SubnetConfig{
+		{
+			CIDR:    "10.80.0.0/24",
+			Gateway: "10.80.0.1",
+			DHCP: config.SubnetDHCPConfig{
+				Enabled:   true,
+				PoolStart: "10.80.0.10",
+				PoolEnd:   "10.80.0.15",
+			},
+		},
+	}, time.Hour, nil)
+	if err != nil {
+		t.Fatalf("new pool manager: %v", err)
+	}
+
+	pm.SetScopeProvider(staticScopeProvider{
+		start: ipv4ToUint32([4]byte{10, 80, 0, 13}),
+		end:   ipv4ToUint32([4]byte{10, 80, 0, 15}),
+		ok:    true,
+	})
+
+	first, err := pm.Allocate(context.Background(), AllocationRequest{})
+	if err != nil || first.IP.String() != "10.80.0.13" {
+		t.Fatalf("expected first scoped allocation at upper-half start, got %+v err=%v", first, err)
+	}
+	if _, ok := pm.tryAllocateSpecific(pm.selectCandidatePools(AllocationRequest{}), net.IPv4(10, 80, 0, 10)); ok {
+		t.Fatal("expected specific allocation outside scope to be rejected")
 	}
 }

@@ -296,9 +296,8 @@ func (s *Server) getSession(id string) (*session, bool) {
 func (s *Server) deleteSession(id string) {
 	s.sessionMu.Lock()
 	defer s.sessionMu.Unlock()
-	if sess, ok := s.sessions[id]; ok {
+	if _, ok := s.sessions[id]; ok {
 		delete(s.sessions, id)
-		close(sess.messages)
 	}
 }
 

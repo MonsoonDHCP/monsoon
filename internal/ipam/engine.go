@@ -680,20 +680,6 @@ func normalizeDNS(in []string) []string {
 	return out
 }
 
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func leaseToIPState(l lease.Lease) IPState {
 	switch l.State {
 	case lease.StateDeclined:

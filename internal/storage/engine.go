@@ -7,18 +7,21 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 const treeKeySep = '\x1f'
 
 type Engine struct {
-	dir    string
-	mu     sync.RWMutex
-	trees  map[string]*BTree
-	index  *IndexManager
-	wal    *WAL
-	pages  *PageManager
-	closed bool
+	dir         string
+	mu          sync.RWMutex
+	trees       map[string]*BTree
+	index       *IndexManager
+	wal         *WAL
+	closed      bool
+	sequence    int64
+	nextWatchID int64
+	watchers    map[int64]chan TxEvent
 }
 
 func OpenEngine(dataDir string, treeNames []string) (*Engine, error) {
@@ -27,9 +30,10 @@ func OpenEngine(dataDir string, treeNames []string) (*Engine, error) {
 	}
 
 	eng := &Engine{
-		dir:   dataDir,
-		trees: make(map[string]*BTree),
-		index: NewIndexManager(),
+		dir:      dataDir,
+		trees:    make(map[string]*BTree),
+		index:    NewIndexManager(),
+		watchers: make(map[int64]chan TxEvent),
 	}
 
 	if err := eng.loadSnapshot(); err != nil {
@@ -40,12 +44,6 @@ func OpenEngine(dataDir string, treeNames []string) (*Engine, error) {
 			eng.trees[n] = NewBTree()
 		}
 	}
-
-	pages, err := OpenPageManager(filepath.Join(dataDir, "pages"))
-	if err != nil {
-		return nil, err
-	}
-	eng.pages = pages
 
 	wal, err := OpenWAL(filepath.Join(dataDir, "wal"))
 	if err != nil {
@@ -126,20 +124,34 @@ func (e *Engine) Iterate(tree string, start, end []byte, fn func(key, value []by
 }
 
 func (e *Engine) Tx(fn func(tx *Tx) error) error {
+	return e.tx(fn, true)
+}
+
+func (e *Engine) TxSilent(fn func(tx *Tx) error) error {
+	return e.tx(fn, false)
+}
+
+func (e *Engine) tx(fn func(tx *Tx) error, notify bool) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if e.closed {
+		e.mu.Unlock()
 		return fmt.Errorf("engine closed")
 	}
 	tx := &Tx{mutations: make([]Mutation, 0, 8)}
 	if err := fn(tx); err != nil {
+		e.mu.Unlock()
 		return err
+	}
+	if len(tx.mutations) == 0 {
+		e.mu.Unlock()
+		return nil
 	}
 
 	for _, m := range tx.mutations {
 		tree := e.mustTreeUnlocked(m.Tree)
 		combined := makeTreeKey(m.Tree, m.Key)
 		if err := e.wal.Append(m.Op, combined, m.Value); err != nil {
+			e.mu.Unlock()
 			return err
 		}
 		old, _ := tree.Get(m.Key)
@@ -152,7 +164,50 @@ func (e *Engine) Tx(fn func(tx *Tx) error) error {
 			e.index.Update(m.Key, old, nil)
 		}
 	}
+	if notify {
+		e.sequence++
+		evt := TxEvent{
+			Sequence:  e.sequence,
+			Timestamp: time.Now().UTC(),
+			Mutations: cloneMutations(tx.mutations),
+		}
+		for _, watcher := range e.watchers {
+			select {
+			case watcher <- evt:
+			default:
+			}
+		}
+	}
+	e.mu.Unlock()
 	return nil
+}
+
+func (e *Engine) WatchTx() (id int64, ch <-chan TxEvent, unsubscribe func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		c := make(chan TxEvent)
+		close(c)
+		return 0, c, func() {}
+	}
+	e.nextWatchID++
+	id = e.nextWatchID
+	c := make(chan TxEvent, 32)
+	e.watchers[id] = c
+	return id, c, func() {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if sub, ok := e.watchers[id]; ok {
+			delete(e.watchers, id)
+			close(sub)
+		}
+	}
+}
+
+func (e *Engine) CurrentSequence() int64 {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.sequence
 }
 
 func (e *Engine) mustTreeUnlocked(name string) *BTree {
@@ -234,14 +289,13 @@ func (e *Engine) Close() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.closed = true
+	for id, watcher := range e.watchers {
+		close(watcher)
+		delete(e.watchers, id)
+	}
 	var errs []error
 	if e.wal != nil {
 		if err := e.wal.Close(); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	if e.pages != nil {
-		if err := e.pages.Close(); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -291,4 +345,17 @@ func errorsJoin(errs ...error) error {
 		b.WriteString(err.Error())
 	}
 	return errors.New(b.String())
+}
+
+func cloneMutations(in []Mutation) []Mutation {
+	out := make([]Mutation, 0, len(in))
+	for _, item := range in {
+		out = append(out, Mutation{
+			Tree:  item.Tree,
+			Op:    item.Op,
+			Key:   append([]byte(nil), item.Key...),
+			Value: append([]byte(nil), item.Value...),
+		})
+	}
+	return out
 }

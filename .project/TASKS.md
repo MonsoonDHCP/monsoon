@@ -145,14 +145,14 @@
 - [ ] #75 — Implement `internal/discovery/tcp.go`: TCP connect probe — non-blocking connect with timeout on configurable ports, optional banner grab (first 256 bytes), service identification (SSH, HTTP, HTTPS, RDP)
 - [ ] #76 — Implement `internal/discovery/dns.go`: Reverse DNS lookup — PTR queries for discovered IPs via stdlib `net.LookupAddr`, batch queries with concurrency limit
 - [ ] #77 — Implement `internal/discovery/passive.go`: Passive DHCP listener — sniff DHCP traffic on network, learn client MACs and hostnames from DISCOVER/REQUEST packets without active probing
-- [ ] #78 — Implement `internal/discovery/oui.go`: MAC vendor OUI lookup — embedded OUI database (IEEE MA-L), parse 3-byte OUI prefix from MAC, return vendor name (e.g., "Apple, Inc.", "Dell Inc.")
+- [x] #78 — Implement `internal/discovery/oui.go`: MAC vendor OUI lookup — embedded OUI database (IEEE MA-L), parse 3-byte OUI prefix from MAC, return vendor name (e.g., "Apple, Inc.", "Dell Inc.")
 - [ ] #79 — Implement `internal/discovery/conflict.go`: Conflict detection logic — compare discovery results with IPAM state, detect: duplicate IPs (multiple MACs), unknown hosts, orphaned leases, static/DHCP mismatches
-- [ ] #80 — Implement `internal/discovery/rogue.go`: Rogue DHCP detection — listen for DHCPOFFER packets from non-configured servers, alert on detection with source MAC/IP
+- [x] #80 — Implement `internal/discovery/rogue.go`: Rogue DHCP detection — listen for DHCPOFFER packets from non-configured servers, alert on detection with source MAC/IP
 - [ ] #81 — Implement `internal/discovery/scheduler.go`: Scan scheduler — parse schedule config (interval-based), manage scan lifecycle, prevent concurrent scans on same subnet, emit results to IPAM engine
 - [ ] #82 — Implement `internal/discovery/engine.go`: Discovery engine orchestrator — coordinate all discovery methods, merge results, update IPAM, emit events (WebSocket + webhooks)
 
 ### DDNS
-- [ ] #83 — Implement `internal/ddns/client.go` + `internal/ddns/tsig.go`: DNS UPDATE client (RFC 2136) — construct UPDATE messages for A/AAAA record add/delete on lease create/expire, PTR record management, TSIG authentication (HMAC-SHA256)
+- [x] #83 — Implement `internal/ddns/client.go` + `internal/ddns/tsig.go`: DNS UPDATE client (RFC 2136) — construct UPDATE messages for A/AAAA record add/delete on lease create/expire, PTR record management, TSIG authentication (HMAC-SHA256)
 
 ---
 
@@ -216,10 +216,10 @@
 
 - [x] #114 — Implement `internal/ha/heartbeat.go`: Peer heartbeat — TCP connection, periodic ping/pong (default 1s), loss detection with configurable timeout (default 10s)
 - [x] #115 — Implement `internal/ha/sync.go` initial sync: Full snapshot transfer — primary sends complete lease database snapshot to secondary on first connect
-- [ ] #116 — Implement `internal/ha/sync.go` incremental sync: WAL streaming — primary streams WAL entries to secondary in real-time, sequence number tracking for consistency
+- [x] #116 — Implement `internal/ha/sync.go` incremental sync: WAL streaming — primary streams WAL entries to secondary in real-time, sequence number tracking for consistency
 - [x] #117 — Implement `internal/ha/election.go`: Leader election — priority-based (lower wins), handle network partition, fencing mechanism to prevent split-brain
 - [x] #118 — Implement `internal/ha/failover.go` active-passive: Failover orchestrator — detect primary failure, promote secondary, take over VIP (gratuitous ARP), resume DHCP serving
-- [ ] #119 — Implement `internal/ha/failover.go` load-sharing: Split-scope mode — configure non-overlapping pool ranges per peer, bidirectional lease sync, graceful takeover of partner's range on failure
+- [x] #119 — Implement `internal/ha/failover.go` load-sharing: Split-scope mode — configure non-overlapping pool ranges per peer, bidirectional lease sync, graceful takeover of partner's range on failure
 - [x] #120 — Add HA status to dashboard: Peer status indicator, sync lag display, manual failover trigger button, HA configuration page
 - [x] #121 — Add HA metrics: `monsoon_ha_heartbeat_latency_seconds`, `monsoon_ha_lease_sync_lag_seconds`, `monsoon_ha_failover_total`, `monsoon_ha_peer_state`
 

@@ -480,3 +480,21 @@ func readSSEEvent(t *testing.T, reader *bufio.Reader) (string, string) {
 	t.Fatal("timed out waiting for sse event")
 	return "", ""
 }
+
+func TestDeleteSessionDoesNotCloseMessageChannel(t *testing.T) {
+	server := NewServer(HandlerDeps{})
+	sess := &session{
+		id:       "session-1",
+		messages: make(chan rpcResponse, 1),
+	}
+	server.setSession(sess)
+	server.deleteSession(sess.id)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("sending to deleted session channel panicked: %v", r)
+		}
+	}()
+
+	sess.messages <- rpcResponse{JSONRPC: "2.0"}
+}

@@ -127,7 +127,14 @@ func TestHandleSolicitRequestRenewReleaseAndInfo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Handle(info) error = %v", err)
 	}
-	if resp == nil || len(resp.Options.DomainList()) != 1 || resp.Options.DomainList()[0] != "lab.internal" {
+	if resp == nil {
+		t.Fatalf("unexpected info-request response: %+v", resp)
+	}
+	raw, ok := resp.Options.Get(OptionDomainList)
+	if !ok {
+		t.Fatalf("expected info-request domain list option: %+v", resp)
+	}
+	if got := decodeDomainList(raw); len(got) != 1 || got[0] != "lab.internal" {
 		t.Fatalf("unexpected info-request response: %+v", resp)
 	}
 }

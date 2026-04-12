@@ -143,8 +143,6 @@ export function useDashboardData(): DashboardState {
 
   const healthQuery = useHealthQuery()
   const systemInfoQuery = useSystemInfoQuery({ enabled: protectedEnabled })
-  const systemConfigQuery = useSystemConfigQuery({ enabled: protectedEnabled })
-  const backupsQuery = useBackupsQuery({ enabled: protectedEnabled })
   const leasesQuery = useLeasesQuery({ enabled: protectedEnabled })
   const subnetsQuery = useSubnetsQuery({ enabled: protectedEnabled })
   const rawSubnetsQuery = useRawSubnetsQuery({ enabled: protectedEnabled })
@@ -155,9 +153,14 @@ export function useDashboardData(): DashboardState {
   const discoveryConflictsQuery = useDiscoveryConflictsQuery({ enabled: protectedEnabled })
   const rogueServersQuery = useRogueServersQuery({ enabled: protectedEnabled })
   const settingsQuery = useUISettingsQuery({ enabled: protectedEnabled })
-  const auditEntriesQuery = useAuditEntriesQuery(200, { enabled: protectedEnabled })
   const currentUserQuery = useCurrentUserQuery({ enabled: protectedEnabled })
   const currentUser = authRequired ? null : (currentUserQuery.data ?? null)
+  const adminReadEnabled =
+    protectedEnabled &&
+    (currentUser?.role === "admin" || (currentUserQuery.isError && isApiError(currentUserQuery.error) && currentUserQuery.error.status === 401))
+  const systemConfigQuery = useSystemConfigQuery({ enabled: adminReadEnabled })
+  const backupsQuery = useBackupsQuery({ enabled: adminReadEnabled })
+  const auditEntriesQuery = useAuditEntriesQuery(200, { enabled: adminReadEnabled })
   const authTokensQuery = useAuthTokensQuery(Boolean(protectedEnabled && currentUser?.role === "admin"))
 
   const protectedErrors = [
@@ -555,6 +558,7 @@ export function useDashboardData(): DashboardState {
         discoveryStarted: makeHandler("discovery.started"),
         discoveryCompleted: makeHandler("discovery.scan_completed"),
         discoveryConflict: makeHandler("discovery.conflict"),
+        discoveryRogue: makeHandler("discovery.rogue_dhcp"),
         settingsUpdated: makeHandler("settings.ui_updated"),
         haRoleChanged: makeHandler("ha.role_changed"),
         haFailoverRequested: makeHandler("ha.failover_requested"),
@@ -574,6 +578,7 @@ export function useDashboardData(): DashboardState {
       fallbackSource.addEventListener("discovery.started", handlers.discoveryStarted)
       fallbackSource.addEventListener("discovery.scan_completed", handlers.discoveryCompleted)
       fallbackSource.addEventListener("discovery.conflict", handlers.discoveryConflict)
+      fallbackSource.addEventListener("discovery.rogue_dhcp", handlers.discoveryRogue)
       fallbackSource.addEventListener("settings.ui_updated", handlers.settingsUpdated)
       fallbackSource.addEventListener("ha.role_changed", handlers.haRoleChanged)
       fallbackSource.addEventListener("ha.failover_requested", handlers.haFailoverRequested)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBTreeOperationsAndIterator(t *testing.T) {
@@ -50,50 +51,12 @@ func TestBTreeOperationsAndIterator(t *testing.T) {
 		t.Fatal("expected delete miss to return false")
 	}
 
-	it := NewIterator(tree, nil, nil, true)
-	if !it.Next() || string(it.Key()) != "c" || string(it.Value()) != "3" {
-		t.Fatalf("unexpected reverse iterator first row %q=%q", it.Key(), it.Value())
+	rows = tree.Snapshot()
+	if len(rows) != 2 || string(rows[1][0]) != "c" || string(rows[1][1]) != "3" {
+		t.Fatalf("unexpected reverse snapshot tail %#v", rows)
 	}
-
-	forward := NewIterator(tree, nil, nil, false)
-	forward.Seek([]byte("a"))
-	if !forward.Next() || string(forward.Key()) != "a" {
-		t.Fatalf("unexpected iterator seek result %q", forward.Key())
-	}
-}
-
-func TestCodecHelpers(t *testing.T) {
-	cases := []struct {
-		name  string
-		value any
-		out   any
-	}{
-		{name: "string", value: "hello", out: new(string)},
-		{name: "bytes", value: []byte("raw"), out: new([]byte)},
-		{name: "int64", value: int64(-7), out: new(int64)},
-		{name: "uint64", value: uint64(9), out: new(uint64)},
-		{name: "bool", value: true, out: new(bool)},
-		{name: "json", value: map[string]any{"name": "monsoon"}, out: &map[string]any{}},
-	}
-	for _, tc := range cases {
-		raw, err := EncodeValue(tc.value)
-		if err != nil {
-			t.Fatalf("%s encode failed: %v", tc.name, err)
-		}
-		if err := DecodeValue(raw, tc.out); err != nil {
-			t.Fatalf("%s decode failed: %v", tc.name, err)
-		}
-	}
-
-	if err := DecodeValue(nil, new(string)); err == nil {
-		t.Fatal("expected empty decode to fail")
-	}
-	raw, _ := EncodeValue("hello")
-	if err := DecodeValue(raw, new(bool)); err == nil {
-		t.Fatal("expected type mismatch to fail")
-	}
-	if _, err := EncodeValue(make(chan int)); err == nil {
-		t.Fatal("expected unsupported json value to fail")
+	if len(rows) == 0 || string(rows[0][0]) != "a" {
+		t.Fatalf("unexpected forward snapshot head %#v", rows)
 	}
 }
 
@@ -120,18 +83,13 @@ func TestIndexManagerAndHelpers(t *testing.T) {
 	if len(matches) != 1 || string(matches[0]) != "pk2" {
 		t.Fatalf("unexpected index scan results %#v", matches)
 	}
-	indexes.Drop("by_value")
-	if indexes.Scan("by_value", []byte("group")) != nil {
-		t.Fatal("expected dropped index to scan nil")
-	}
-
 	key := composeIndexKey([]byte("group"), []byte("pk"))
 	if !bytes.Equal(key, []byte("group\x00pk")) {
 		t.Fatalf("unexpected composed index key %q", key)
 	}
 }
 
-func TestSnapshotPageManagerWALEngineAndHelpers(t *testing.T) {
+func TestSnapshotWALEngineAndHelpers(t *testing.T) {
 	dir := t.TempDir()
 
 	trees := map[string]*BTree{
@@ -157,33 +115,6 @@ func TestSnapshotPageManagerWALEngineAndHelpers(t *testing.T) {
 	}
 	if _, err := ReadSnapshot(filepath.Join(dir, "bad.snapshot")); err == nil {
 		t.Fatal("expected invalid snapshot to fail")
-	}
-
-	pm, err := OpenPageManager(filepath.Join(dir, "pages"))
-	if err != nil {
-		t.Fatalf("open page manager: %v", err)
-	}
-	pageID, err := pm.Allocate()
-	if err != nil || pageID != 0 {
-		t.Fatalf("expected first page id 0, got %d err=%v", pageID, err)
-	}
-	if err := pm.Write(pageID, []byte("hello")); err != nil {
-		t.Fatalf("write page: %v", err)
-	}
-	page, err := pm.Read(pageID)
-	if err != nil || !bytes.HasPrefix(page, []byte("hello")) {
-		t.Fatalf("unexpected page read prefix %q err=%v", page[:5], err)
-	}
-	if err := pm.Write(pageID, bytes.Repeat([]byte("x"), PageSize+1)); err == nil {
-		t.Fatal("expected oversized page write to fail")
-	}
-	pm.Free(pageID)
-	reused, err := pm.Allocate()
-	if err != nil || reused != pageID {
-		t.Fatalf("expected freed page id reuse, got %d err=%v", reused, err)
-	}
-	if err := pm.Close(); err != nil {
-		t.Fatalf("close page manager: %v", err)
 	}
 
 	walDir := filepath.Join(dir, "wal")
@@ -225,6 +156,8 @@ func TestSnapshotPageManagerWALEngineAndHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open engine: %v", err)
 	}
+	_, txCh, unsubscribe := engine.WatchTx()
+	defer unsubscribe()
 	if err := engine.Put("leases", []byte("ip-2"), []byte("lease-2")); err != nil {
 		t.Fatalf("engine put: %v", err)
 	}
@@ -241,11 +174,50 @@ func TestSnapshotPageManagerWALEngineAndHelpers(t *testing.T) {
 	if err := engine.Delete("leases", []byte("ip-2")); err != nil {
 		t.Fatalf("engine delete: %v", err)
 	}
+	if err := engine.Put("leases", []byte("ip-3"), []byte("lease-3")); err != nil {
+		t.Fatalf("engine put second key: %v", err)
+	}
+	var txEvent TxEvent
+	select {
+	case txEvent = <-txCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tx event")
+	}
+	if txEvent.Sequence != 1 || len(txEvent.Mutations) != 1 || txEvent.Mutations[0].Tree != "leases" {
+		t.Fatalf("unexpected tx event %#v", txEvent)
+	}
+	select {
+	case txEvent = <-txCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for second tx event")
+	}
+	if txEvent.Sequence != 2 || txEvent.Mutations[0].Op != OpDel {
+		t.Fatalf("unexpected second tx event %#v", txEvent)
+	}
+	select {
+	case txEvent = <-txCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for third tx event")
+	}
+	if txEvent.Sequence != 3 || txEvent.Mutations[0].Op != OpPut || string(txEvent.Mutations[0].Key) != "ip-3" {
+		t.Fatalf("unexpected third tx event %#v", txEvent)
+	}
+	if engine.CurrentSequence() != 3 {
+		t.Fatalf("unexpected engine sequence %d", engine.CurrentSequence())
+	}
 	if _, err := engine.Get("leases", []byte("ip-2")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
 	if err := engine.Close(); err != nil {
 		t.Fatalf("engine close: %v", err)
+	}
+	select {
+	case _, ok := <-txCh:
+		if ok {
+			t.Fatal("expected tx watcher channel to close with engine")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tx watcher close")
 	}
 	if err := engine.Tx(func(tx *Tx) error { return nil }); err == nil {
 		t.Fatal("expected tx on closed engine to fail")

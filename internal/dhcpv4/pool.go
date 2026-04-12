@@ -28,6 +28,10 @@ type AllocationResult struct {
 	LeaseDuration time.Duration
 }
 
+type ScopeProvider interface {
+	AllocationScope(poolID string, start, end uint32) (scopeStart, scopeEnd uint32, ok bool)
+}
+
 type subnetPool struct {
 	id       string
 	prefix   netip.Prefix
@@ -40,10 +44,11 @@ type subnetPool struct {
 }
 
 type PoolManager struct {
-	mu    sync.Mutex
-	store lease.Store
-	pools map[string]*subnetPool
-	order []string
+	mu            sync.Mutex
+	store         lease.Store
+	pools         map[string]*subnetPool
+	order         []string
+	scopeProvider ScopeProvider
 }
 
 func NewPoolManager(subnets []config.SubnetConfig, defaultLease time.Duration, store lease.Store) (*PoolManager, error) {
@@ -90,6 +95,12 @@ func NewPoolManager(subnets []config.SubnetConfig, defaultLease time.Duration, s
 		_ = pm.SyncFromLeases(context.Background())
 	}
 	return pm, nil
+}
+
+func (pm *PoolManager) SetScopeProvider(provider ScopeProvider) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.scopeProvider = provider
 }
 
 func (pm *PoolManager) SyncFromLeases(ctx context.Context) error {
@@ -211,7 +222,8 @@ func (pm *PoolManager) tryAllocateSpecific(candidates []*subnetPool, ip net.IP) 
 	}
 	u := ipv4ToUint32([4]byte{ip[0], ip[1], ip[2], ip[3]})
 	for _, pool := range candidates {
-		if u < pool.start || u > pool.end {
+		start, end, ok := pm.effectiveRange(pool)
+		if !ok || u < start || u > end {
 			continue
 		}
 		off := u - pool.start
@@ -224,10 +236,17 @@ func (pm *PoolManager) tryAllocateSpecific(candidates []*subnetPool, ip net.IP) 
 }
 
 func (pm *PoolManager) nextFree(pool *subnetPool) (net.IP, bool) {
-	for i, used := range pool.bitmap {
-		if !used {
-			u := pool.start + uint32(i)
+	start, end, ok := pm.effectiveRange(pool)
+	if !ok {
+		return nil, false
+	}
+	for u := start; u <= end; u++ {
+		off := u - pool.start
+		if !pool.bitmap[off] {
 			return uint32ToIPv4(u), true
+		}
+		if u == ^uint32(0) {
+			break
 		}
 	}
 	return nil, false
@@ -270,6 +289,29 @@ func parseIPs(raw []string) []net.IP {
 		}
 	}
 	return out
+}
+
+func (pm *PoolManager) effectiveRange(pool *subnetPool) (uint32, uint32, bool) {
+	if pool == nil {
+		return 0, 0, false
+	}
+	if pm.scopeProvider == nil {
+		return pool.start, pool.end, true
+	}
+	start, end, ok := pm.scopeProvider.AllocationScope(pool.id, pool.start, pool.end)
+	if !ok {
+		return 0, 0, false
+	}
+	if start < pool.start {
+		start = pool.start
+	}
+	if end > pool.end {
+		end = pool.end
+	}
+	if start > end {
+		return 0, 0, false
+	}
+	return start, end, true
 }
 
 func ipv4ToUint32(ip [4]byte) uint32 {

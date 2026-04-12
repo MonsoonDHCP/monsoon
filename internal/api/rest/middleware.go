@@ -48,12 +48,6 @@ func RequestIDFromContext(ctx context.Context) (string, bool) {
 	return requestID, ok && requestID != ""
 }
 
-func TrustedProxyHeadersMiddleware(trusted []string) Middleware {
-	return TrustedProxyHeadersMiddlewareFunc(func() []string {
-		return append([]string(nil), trusted...)
-	})
-}
-
 func TrustedProxyHeadersMiddlewareFunc(trusted func() []string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -158,12 +152,6 @@ func (r *responseRecorder) SetErrorCode(code string) {
 	r.errorCode = code
 }
 
-func CORSMiddleware(origins []string) Middleware {
-	return CORSMiddlewareFunc(func() []string {
-		return append([]string(nil), origins...)
-	})
-}
-
 func CORSMiddlewareFunc(origins func() []string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -262,12 +250,6 @@ func (l *tokenBucketLimiter) allow() bool {
 	return true
 }
 
-func RateLimitMiddleware(rps int) Middleware {
-	return RateLimitMiddlewareFunc(func() int {
-		return rps
-	})
-}
-
 func RateLimitMiddlewareFunc(rps func() int) Middleware {
 	var lim sync.Map
 	return func(next http.Handler) http.Handler {
@@ -289,12 +271,6 @@ func RateLimitMiddlewareFunc(rps func() int) Middleware {
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-func AuthRateLimitMiddleware(rps int, registry *metrics.Registry, logger *audit.Logger) Middleware {
-	return AuthRateLimitMiddlewareFunc(func() int {
-		return rps
-	}, registry, logger)
 }
 
 func AuthRateLimitMiddlewareFunc(rps func() int, registry *metrics.Registry, logger *audit.Logger) Middleware {

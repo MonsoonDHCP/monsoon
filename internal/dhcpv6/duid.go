@@ -1,7 +1,6 @@
 package dhcpv6
 
 import (
-	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"net"
@@ -61,15 +60,6 @@ func ParseDUID(raw []byte) (DUID, error) {
 	return out, nil
 }
 
-func GenerateDUIDLLT(hardwareType uint16, mac net.HardwareAddr, now time.Time) []byte {
-	buf := make([]byte, 8+len(mac))
-	binary.BigEndian.PutUint16(buf[0:2], DUIDTypeLLT)
-	binary.BigEndian.PutUint16(buf[2:4], hardwareType)
-	binary.BigEndian.PutUint32(buf[4:8], duidTime(now))
-	copy(buf[8:], mac)
-	return buf
-}
-
 func GenerateDUIDLL(hardwareType uint16, mac net.HardwareAddr) []byte {
 	buf := make([]byte, 4+len(mac))
 	binary.BigEndian.PutUint16(buf[0:2], DUIDTypeLL)
@@ -78,29 +68,11 @@ func GenerateDUIDLL(hardwareType uint16, mac net.HardwareAddr) []byte {
 	return buf
 }
 
-func GenerateDUIDEN(enterpriseNumber uint32, opaque []byte) []byte {
-	buf := make([]byte, 6+len(opaque))
-	binary.BigEndian.PutUint16(buf[0:2], DUIDTypeEN)
-	binary.BigEndian.PutUint32(buf[2:6], enterpriseNumber)
-	copy(buf[6:], opaque)
-	return buf
-}
-
 func GenerateDUIDUUID(uuid [16]byte) []byte {
 	buf := make([]byte, 18)
 	binary.BigEndian.PutUint16(buf[0:2], DUIDTypeUUID)
 	copy(buf[2:18], uuid[:])
 	return buf
-}
-
-func GenerateRandomDUIDUUID() ([]byte, error) {
-	var id [16]byte
-	if _, err := rand.Read(id[:]); err != nil {
-		return nil, err
-	}
-	id[6] = (id[6] & 0x0f) | 0x40
-	id[8] = (id[8] & 0x3f) | 0x80
-	return GenerateDUIDUUID(id), nil
 }
 
 func duidTime(now time.Time) uint32 {

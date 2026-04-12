@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/monsoondhcp/monsoon/internal/storage"
@@ -22,6 +23,7 @@ type Service struct {
 	lockouts   *lockoutTracker
 	authType   string
 	cookieName string
+	mu         sync.Mutex
 }
 
 func NewService(store *storage.Engine, options ServiceOptions) *Service {

@@ -73,16 +73,6 @@ var (
 	macPattern  = regexp.MustCompile(`(?i)\b[0-9a-f]{2}[:-](?:[0-9a-f]{2}[:-]){4}[0-9a-f]{2}\b`)
 )
 
-func DefaultOptions() Options {
-	return Options{
-		Methods:             []string{"passive"},
-		TCPPorts:            []int{22, 80, 443},
-		ProbeTimeout:        900 * time.Millisecond,
-		MaxTargetsPerSubnet: 32,
-		MaxConcurrency:      12,
-	}
-}
-
 func NormalizeOptions(in Options) Options {
 	out := in
 	if len(out.Methods) == 0 {
@@ -102,10 +92,6 @@ func NormalizeOptions(in Options) Options {
 		out.MaxConcurrency = 12
 	}
 	return out
-}
-
-func NewEngine(store *storage.Engine, leaseStore lease.Store, ipamEngine *ipam.Engine, interval time.Duration) *Engine {
-	return NewEngineWithOptions(store, leaseStore, ipamEngine, interval, DefaultOptions())
 }
 
 func NewEngineWithOptions(store *storage.Engine, leaseStore lease.Store, ipamEngine *ipam.Engine, interval time.Duration, options Options) *Engine {

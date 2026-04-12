@@ -22,8 +22,8 @@ func TestGRPCMessageRoundTripsAndDecoders(t *testing.T) {
 		Uptime:      "5m",
 		PayloadJSON: `{"ready":true}`,
 	}
-	var decodedHealth systemHealthResponse
-	if err := decodedHealth.unmarshalProto(health.marshalProto()); err != nil {
+	decodedHealth, err := decodeSystemHealthResponseTest(health.marshalProto())
+	if err != nil {
 		t.Fatalf("unmarshal health: %v", err)
 	}
 	if decodedHealth.Status != health.Status || !decodedHealth.Ready || decodedHealth.PayloadJSON != health.PayloadJSON {
@@ -65,8 +65,8 @@ func TestGRPCMessageRoundTripsAndDecoders(t *testing.T) {
 		CreatedAt: time.Unix(10, 0),
 		UpdatedAt: time.Unix(20, 0),
 	})
-	var decodedSubnet subnetMessage
-	if err := decodedSubnet.unmarshalProto(subnetMsg.marshalProto()); err != nil {
+	decodedSubnet, err := decodeSubnetMessageTest(subnetMsg.marshalProto())
+	if err != nil {
 		t.Fatalf("unmarshal subnet: %v", err)
 	}
 	if decodedSubnet.CIDR != subnetMsg.CIDR || decodedSubnet.CreatedAt != 10 || !decodedSubnet.DHCP {
@@ -84,8 +84,8 @@ func TestGRPCMessageRoundTripsAndDecoders(t *testing.T) {
 		UpdatedAt:  time.Unix(40, 0),
 		Duration:   time.Hour,
 	})
-	var decodedLease leaseMessage
-	if err := decodedLease.unmarshalProto(leaseMsg.marshalProto()); err != nil {
+	decodedLease, err := decodeLeaseMessageTest(leaseMsg.marshalProto())
+	if err != nil {
 		t.Fatalf("unmarshal lease: %v", err)
 	}
 	if decodedLease.IP != "10.0.0.10" || decodedLease.Duration != 3600 || decodedLease.State != "bound" {
@@ -93,8 +93,8 @@ func TestGRPCMessageRoundTripsAndDecoders(t *testing.T) {
 	}
 
 	eventMsg := leaseEventMessage{Type: "lease.created", IP: "10.0.0.10", OccurredAt: 50, Lease: &leaseMsg}
-	var decodedEvent leaseEventMessage
-	if err := decodedEvent.unmarshalProto(eventMsg.marshalProto()); err != nil {
+	decodedEvent, err := decodeLeaseEventMessageTest(eventMsg.marshalProto())
+	if err != nil {
 		t.Fatalf("unmarshal lease event: %v", err)
 	}
 	if decodedEvent.Lease == nil || decodedEvent.Lease.IP != "10.0.0.10" || decodedEvent.OccurredAt != 50 {
@@ -139,8 +139,8 @@ func TestGRPCMessageRoundTripsAndDecoders(t *testing.T) {
 
 	conflictMsg := newConflictMessage(discovery.Conflict{IP: "10.0.0.10", MACs: []string{"AA", "BB"}, Severity: "high", Note: "dup"})
 	discoveryMsg := discoveryEventMessage{Type: "conflict", ScanID: "scan-1", Subnet: "10.0.0.0/24", IP: "10.0.0.10", Found: 2, MACs: []string{"AA", "BB"}, OccurredAt: 60, Note: "dup"}
-	var decodedDiscovery discoveryEventMessage
-	if err := decodedDiscovery.unmarshalProto(discoveryMsg.marshalProto()); err != nil {
+	decodedDiscovery, err := decodeDiscoveryEventMessageTest(discoveryMsg.marshalProto())
+	if err != nil {
 		t.Fatalf("unmarshal discovery event: %v", err)
 	}
 	if decodedDiscovery.ScanID != "scan-1" || len(decodedDiscovery.MACs) != 2 || conflictMsg.IP != "10.0.0.10" {

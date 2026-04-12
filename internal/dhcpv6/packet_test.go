@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
-	"time"
 )
 
 func TestPacketEncodeDecodeRoundTrip(t *testing.T) {
@@ -66,22 +65,20 @@ func TestRelayPacketRoundTrip(t *testing.T) {
 
 func TestOptionsAndDUIDHelpers(t *testing.T) {
 	mac, _ := net.ParseMAC("aa:bb:cc:dd:ee:ff")
-	duid := make([]byte, 8+len(mac))
-	binary.BigEndian.PutUint16(duid[0:2], DUIDTypeLLT)
-	binary.BigEndian.PutUint16(duid[2:4], 1)
-	binary.BigEndian.PutUint32(duid[4:8], duidTime(time.Unix(1710000000, 0)))
-	copy(duid[8:], mac)
-	parsed, err := ParseDUID(duid)
-	if err != nil {
-		t.Fatalf("ParseDUID() error = %v", err)
+	duid := testDUIDLLT(1, 763430400, mac)
+	if got := binary.BigEndian.Uint16(duid[0:2]); got != 1 {
+		t.Fatalf("unexpected duid type %d", got)
 	}
-	if parsed.Type != DUIDTypeLLT || !bytes.Equal(parsed.LinkLayerAddr, mac) {
-		t.Fatalf("unexpected parsed duid: %+v", parsed)
+	if got := binary.BigEndian.Uint16(duid[2:4]); got != 1 {
+		t.Fatalf("unexpected hardware type %d", got)
+	}
+	if !bytes.Equal(duid[8:], mac) {
+		t.Fatalf("unexpected link-layer address %x", duid[8:])
 	}
 
 	opts := Options{}
 	opts.SetClientID(duid)
-	opts.SetServerID(GenerateDUIDLL(1, mac))
+	opts.SetServerID(testDUIDLL(1, mac))
 	opts.SetRapidCommit()
 	opts.SetDNSServers([]net.IP{net.ParseIP("2001:4860:4860::8888")})
 	opts.SetDomainList([]string{"example.internal"})
@@ -112,8 +109,8 @@ func TestOptionsAndDUIDHelpers(t *testing.T) {
 	if !ok {
 		t.Fatal("expected domain list option")
 	}
-	if got := decodeDomainList(domainRaw); len(got) != 1 || got[0] != "example.internal" {
-		t.Fatalf("unexpected domain list: %#v", got)
+	if !bytes.Equal(domainRaw, encodeDomainList([]string{"example.internal"})) {
+		t.Fatalf("unexpected domain list bytes: %x", domainRaw)
 	}
 	dnsRaw, ok := decoded.Get(OptionDNSServers)
 	if !ok || len(dnsRaw) != 16 {

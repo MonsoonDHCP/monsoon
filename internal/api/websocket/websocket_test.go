@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ import (
 	restapi "github.com/monsoondhcp/monsoon/internal/api/rest"
 	"github.com/monsoondhcp/monsoon/internal/auth"
 	"github.com/monsoondhcp/monsoon/internal/events"
+	"github.com/monsoondhcp/monsoon/internal/storage"
 )
 
 func TestNormalizeEventAddsCanonicalAliases(t *testing.T) {
@@ -103,18 +105,14 @@ func TestHubWildcardSubscriptionReceivesCanonicalEvent(t *testing.T) {
 func TestHubRejectsCrossOriginWhenAuthIsEnforced(t *testing.T) {
 	broker := events.NewBroker(8)
 	hub := NewHub(broker)
+	authService, authHeader := newAuthTokenService(t, auth.DefaultRoleAdmin)
 
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ctx := restapi.WithIdentity(restapi.WithAuthEnforcement(r.Context(), true), auth.Identity{
-			Username: "admin",
-			Role:     auth.DefaultRoleAdmin,
-		})
-		hub.Handler().ServeHTTP(w, r.WithContext(ctx))
-	}))
+	ts := httptest.NewServer(restapi.Chain(hub.Handler(), restapi.AuthMiddlewareFunc(authService, func() bool { return true })))
 	defer ts.Close()
 
 	status, _, _ := dialWebSocketHandshake(t, ts.URL, map[string]string{
-		"Origin": "https://evil.example",
+		"Origin":        "https://evil.example",
+		"Authorization": authHeader,
 	})
 	if !strings.Contains(status, "403") {
 		t.Fatalf("expected 403 for cross-origin websocket, got %s", status)
@@ -289,4 +287,20 @@ func containsType(items []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func newAuthTokenService(t *testing.T, role string) (*auth.Service, string) {
+	t.Helper()
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "auth-storage"), []string{"users", "api_tokens", "api_tokens_by_hash"})
+	if err != nil {
+		t.Fatalf("open auth storage: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	service := auth.NewService(eng, auth.ServiceOptions{CookieName: "monsoon_session", SessionDuration: time.Hour})
+	_, token, err := service.CreateToken(context.Background(), "test-"+role, role, nil, "test token")
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+	return service, "Bearer " + token
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func TestRuntimeHelperFunctions(t *testing.T) {
-	cfg := config.NewDefaults()
+	cfg := config.DefaultConfig()
 	cfg.Auth.Enabled = true
 	cfg.Auth.Type = "LOCAL"
 	if !runtimeAuthEnforced(cfg) {

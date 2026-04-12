@@ -256,7 +256,7 @@ func TestAuthLoginAndMeRoutes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
-	handler := Chain(mux, AuthMiddleware(authService, true))
+	handler := Chain(mux, AuthMiddlewareFunc(authService, func() bool { return true }))
 
 	loginRR := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader([]byte(`{"username":"admin","password":"admin"}`)))
@@ -301,7 +301,7 @@ func TestAuthBootstrapRouteOnlyWorksOnce(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
-	handler := Chain(mux, AuthMiddleware(authService, true))
+	handler := Chain(mux, AuthMiddlewareFunc(authService, func() bool { return true }))
 
 	firstRR := httptest.NewRecorder()
 	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/bootstrap", bytes.NewReader([]byte(`{"username":"admin","password":"secret-pass"}`)))
@@ -338,7 +338,7 @@ func TestPasswordChangeRotatesSessionAndRevokesPreviousCookie(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
-	handler := Chain(mux, AuthMiddleware(authService, true))
+	handler := Chain(mux, AuthMiddlewareFunc(authService, func() bool { return true }))
 
 	loginRR := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader([]byte(`{"username":"admin","password":"admin"}`)))
@@ -421,7 +421,7 @@ func TestAuthFailureMetricsAreExported(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
-	handler := Chain(mux, AuthMiddleware(authService, true))
+	handler := Chain(mux, AuthMiddlewareFunc(authService, func() bool { return true }))
 
 	loginRR := httptest.NewRecorder()
 	loginReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong-password"}`)))
@@ -481,7 +481,7 @@ func TestAuthLoginLocksAccountAfterRepeatedFailures(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
-	handler := Chain(mux, AuthMiddleware(authService, true))
+	handler := Chain(mux, AuthMiddlewareFunc(authService, func() bool { return true }))
 
 	firstRR := httptest.NewRecorder()
 	firstReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader([]byte(`{"username":"admin","password":"wrong-pass"}`)))
@@ -561,7 +561,7 @@ func TestAuthRoutesRejectUnsupportedLocalAuthMode(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register routes failed: %v", err)
 	}
-	handler := Chain(mux, AuthMiddleware(authService, true))
+	handler := Chain(mux, AuthMiddlewareFunc(authService, func() bool { return true }))
 
 	for _, tc := range []struct {
 		name string
@@ -604,7 +604,7 @@ func TestRequireRoleForMutationHonorsAuthEnforcement(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
-	viewerCtx := WithIdentity(WithAuthEnforcement(req.Context(), true), auth.Identity{Username: "viewer", Role: auth.DefaultRoleViewer})
+	viewerCtx := withTestIdentity(WithAuthEnforcement(req.Context(), true), auth.Identity{Username: "viewer", Role: auth.DefaultRoleViewer})
 	if requireRoleForMutation(rr, req.WithContext(viewerCtx), auth.DefaultRoleOperator) {
 		t.Fatalf("expected viewer role to be denied")
 	}
@@ -613,7 +613,7 @@ func TestRequireRoleForMutationHonorsAuthEnforcement(t *testing.T) {
 	}
 
 	rr = httptest.NewRecorder()
-	operatorCtx := WithIdentity(WithAuthEnforcement(req.Context(), true), auth.Identity{Username: "operator", Role: auth.DefaultRoleOperator})
+	operatorCtx := withTestIdentity(WithAuthEnforcement(req.Context(), true), auth.Identity{Username: "operator", Role: auth.DefaultRoleOperator})
 	if !requireRoleForMutation(rr, req.WithContext(operatorCtx), auth.DefaultRoleOperator) {
 		t.Fatalf("expected operator role to be allowed")
 	}
@@ -686,7 +686,7 @@ func TestDiscoveryRoutes(t *testing.T) {
 
 	leaseStore := lease.NewStore(eng)
 	ipamEngine := ipam.NewEngine(eng, leaseStore)
-	discoveryEngine := discovery.NewEngine(eng, leaseStore, ipamEngine, time.Hour)
+	discoveryEngine := discovery.NewEngineWithOptions(eng, leaseStore, ipamEngine, time.Hour, discovery.Options{})
 
 	mux := http.NewServeMux()
 	if err := RegisterRoutes(mux, RouterDeps{
@@ -936,9 +936,9 @@ func TestSystemSensitiveReadsRequireAdminWhenAuthIsEnforced(t *testing.T) {
 		t.Fatalf("register routes failed: %v", err)
 	}
 
-	viewerCtx := WithIdentity(context.Background(), auth.Identity{Username: "viewer", Role: auth.DefaultRoleViewer})
+	viewerCtx := withTestIdentity(context.Background(), auth.Identity{Username: "viewer", Role: auth.DefaultRoleViewer})
 	viewerCtx = WithAuthEnforcement(viewerCtx, true)
-	adminCtx := WithIdentity(context.Background(), auth.Identity{Username: "admin", Role: auth.DefaultRoleAdmin})
+	adminCtx := withTestIdentity(context.Background(), auth.Identity{Username: "admin", Role: auth.DefaultRoleAdmin})
 	adminCtx = WithAuthEnforcement(adminCtx, true)
 
 	for _, tc := range []string{

@@ -48,10 +48,6 @@ func (s *Service) CookieName() string {
 	return s.cookieName
 }
 
-func (s *Service) AuthType() string {
-	return s.authType
-}
-
 func (s *Service) SupportsLocalAuth() bool {
 	return strings.EqualFold(s.authType, "local")
 }

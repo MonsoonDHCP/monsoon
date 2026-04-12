@@ -321,12 +321,6 @@ type identityContextKey struct{}
 type authEnforcedContextKey struct{}
 type trustedProxyContextKey struct{}
 
-func AuthMiddleware(service *auth.Service, enforce bool) Middleware {
-	return AuthMiddlewareFunc(service, func() bool {
-		return enforce
-	})
-}
-
 func AuthMiddlewareFunc(service *auth.Service, enforce func() bool) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -364,10 +358,6 @@ func AuthEnforcedFromContext(ctx context.Context) bool {
 	raw := ctx.Value(authEnforcedContextKey{})
 	enforced, ok := raw.(bool)
 	return ok && enforced
-}
-
-func WithIdentity(ctx context.Context, identity auth.Identity) context.Context {
-	return context.WithValue(ctx, identityContextKey{}, identity)
 }
 
 func IdentityFromContext(ctx context.Context) (auth.Identity, bool) {

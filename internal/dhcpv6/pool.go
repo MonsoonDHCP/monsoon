@@ -138,8 +138,6 @@ func (m *PoolManager) Allocate(ctx context.Context, req AllocationRequest) (Allo
 	return AllocationResult{}, fmt.Errorf("no dhcpv6 addresses available in %s", pool.prefix)
 }
 
-func (m *PoolManager) Release(_ net.IP, _ string) {}
-
 func (m *PoolManager) selectPool(req AllocationRequest) (managedPool, error) {
 	if ip := req.RequestedIP.To16(); ip != nil {
 		if addr, ok := netip.AddrFromSlice(ip); ok {

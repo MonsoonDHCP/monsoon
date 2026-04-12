@@ -32,24 +32,6 @@ func (m systemHealthResponse) marshalProto() []byte {
 	return out
 }
 
-func (m *systemHealthResponse) unmarshalProto(data []byte) error {
-	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
-		switch field {
-		case 1:
-			m.Status = string(raw)
-		case 2:
-			m.Ready = parseBool(value)
-		case 3:
-			m.Version = string(raw)
-		case 4:
-			m.Uptime = string(raw)
-		case 5:
-			m.PayloadJSON = string(raw)
-		}
-		return nil
-	})
-}
-
 type cidrRequest struct {
 	CIDR string
 }
@@ -179,36 +161,6 @@ func (m subnetMessage) marshalProto() []byte {
 	return out
 }
 
-func (m *subnetMessage) unmarshalProto(data []byte) error {
-	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
-		switch field {
-		case 1:
-			m.CIDR = string(raw)
-		case 2:
-			m.Name = string(raw)
-		case 3:
-			m.VLAN = int(value)
-		case 4:
-			m.Gateway = string(raw)
-		case 5:
-			m.DNS = append(m.DNS, string(raw))
-		case 6:
-			m.DHCP = parseBool(value)
-		case 7:
-			m.PoolStart = string(raw)
-		case 8:
-			m.PoolEnd = string(raw)
-		case 9:
-			m.LeaseSec = int64(value)
-		case 10:
-			m.CreatedAt = int64(value)
-		case 11:
-			m.UpdatedAt = int64(value)
-		}
-		return nil
-	})
-}
-
 type utilizationResponse struct {
 	CIDR         string
 	Name         string
@@ -321,32 +273,6 @@ func (m leaseMessage) marshalProto() []byte {
 	return out
 }
 
-func (m *leaseMessage) unmarshalProto(data []byte) error {
-	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
-		switch field {
-		case 1:
-			m.IP = string(raw)
-		case 2:
-			m.MAC = string(raw)
-		case 3:
-			m.Hostname = string(raw)
-		case 4:
-			m.State = string(raw)
-		case 5:
-			m.SubnetID = string(raw)
-		case 6:
-			m.RelayAddr = string(raw)
-		case 7:
-			m.ExpiryUnix = int64(value)
-		case 8:
-			m.UpdatedAt = int64(value)
-		case 9:
-			m.Duration = int64(value)
-		}
-		return nil
-	})
-}
-
 type watchLeasesRequest struct {
 	SubnetCIDR string
 }
@@ -382,26 +308,6 @@ func (m leaseEventMessage) marshalProto() []byte {
 	}
 	out = appendInt64(out, 4, m.OccurredAt)
 	return out
-}
-
-func (m *leaseEventMessage) unmarshalProto(data []byte) error {
-	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
-		switch field {
-		case 1:
-			m.Type = string(raw)
-		case 2:
-			m.IP = string(raw)
-		case 3:
-			item := &leaseMessage{}
-			if err := item.unmarshalProto(raw); err != nil {
-				return err
-			}
-			m.Lease = item
-		case 4:
-			m.OccurredAt = int64(value)
-		}
-		return nil
-	})
 }
 
 type searchAddressesRequest struct {
@@ -536,30 +442,6 @@ func (m ipAddressMessage) marshalProto() []byte {
 	return out
 }
 
-func (m *ipAddressMessage) unmarshalProto(data []byte) error {
-	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
-		switch field {
-		case 1:
-			m.IP = string(raw)
-		case 2:
-			m.SubnetCIDR = string(raw)
-		case 3:
-			m.State = string(raw)
-		case 4:
-			m.MAC = string(raw)
-		case 5:
-			m.Hostname = string(raw)
-		case 6:
-			m.LeaseState = string(raw)
-		case 7:
-			m.Source = string(raw)
-		case 8:
-			m.UpdatedAt = int64(value)
-		}
-		return nil
-	})
-}
-
 type triggerScanRequest struct {
 	Reason  string
 	Subnets []string
@@ -679,30 +561,6 @@ func (m discoveryEventMessage) marshalProto() []byte {
 	out = appendInt64(out, 7, m.OccurredAt)
 	out = appendString(out, 8, m.Note)
 	return out
-}
-
-func (m *discoveryEventMessage) unmarshalProto(data []byte) error {
-	return readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
-		switch field {
-		case 1:
-			m.Type = string(raw)
-		case 2:
-			m.ScanID = string(raw)
-		case 3:
-			m.Subnet = string(raw)
-		case 4:
-			m.IP = string(raw)
-		case 5:
-			m.Found = int(value)
-		case 6:
-			m.MACs = append(m.MACs, string(raw))
-		case 7:
-			m.OccurredAt = int64(value)
-		case 8:
-			m.Note = string(raw)
-		}
-		return nil
-	})
 }
 
 func decodeEmpty(_ []byte) (any, error) {

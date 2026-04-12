@@ -277,7 +277,7 @@ func TestMCPMutationRespectsRole(t *testing.T) {
 		t.Fatalf("create token: %v", err)
 	}
 
-	handler := restapi.Chain(server.Handler(), restapi.AuthMiddleware(authService, true))
+	handler := restapi.Chain(server.Handler(), restapi.AuthMiddlewareFunc(authService, func() bool { return true }))
 	ts := httptest.NewServer(handler)
 	defer ts.Close()
 
@@ -323,10 +323,7 @@ func TestRequireRoleHonorsAuthEnforcement(t *testing.T) {
 		t.Fatalf("expected authentication error, got %v", err)
 	}
 
-	ctx := restapi.WithIdentity(restapi.WithAuthEnforcement(context.Background(), true), auth.Identity{
-		Username: "viewer",
-		Role:     auth.DefaultRoleViewer,
-	})
+	ctx := authenticatedContextForTest(t, auth.DefaultRoleViewer)
 	err = requireRole(ctx, auth.DefaultRoleAdmin)
 	if err == nil || !strings.Contains(err.Error(), "admin role required") {
 		t.Fatalf("expected role error, got %v", err)
@@ -375,7 +372,7 @@ func newTestMCPServer(t *testing.T) *Server {
 		t.Fatalf("seed lease: %v", err)
 	}
 
-	discoveryEngine := discovery.NewEngine(eng, leaseStore, ipamEngine, time.Hour)
+	discoveryEngine := discovery.NewEngineWithOptions(eng, leaseStore, ipamEngine, time.Hour, discovery.Options{})
 	return NewServer(HandlerDeps{
 		LeaseStore:      leaseStore,
 		IPAMEngine:      ipamEngine,
@@ -497,4 +494,33 @@ func TestDeleteSessionDoesNotCloseMessageChannel(t *testing.T) {
 	}()
 
 	sess.messages <- rpcResponse{JSONRPC: "2.0"}
+}
+
+func authenticatedContextForTest(t *testing.T, role string) context.Context {
+	t.Helper()
+	eng, err := storage.OpenEngine(filepath.Join(t.TempDir(), "auth-storage"), []string{"users", "api_tokens", "api_tokens_by_hash"})
+	if err != nil {
+		t.Fatalf("open auth storage: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	service := auth.NewService(eng, auth.ServiceOptions{CookieName: "monsoon_session", SessionDuration: time.Hour})
+	_, token, err := service.CreateToken(context.Background(), "test-"+role, role, nil, "test token")
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	var captured context.Context
+	handler := restapi.AuthMiddlewareFunc(service, func() bool { return true })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Context()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/internal/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent || captured == nil {
+		t.Fatalf("failed to capture authenticated context, code=%d", rr.Code)
+	}
+	return captured
 }

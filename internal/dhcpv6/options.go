@@ -1,7 +1,6 @@
 package dhcpv6
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -262,31 +261,4 @@ func encodeDomainList(domains []string) []byte {
 		out = append(out, 0)
 	}
 	return out
-}
-
-func decodeDomainList(raw []byte) []string {
-	result := make([]string, 0, 2)
-	reader := bytes.NewBuffer(raw)
-	for reader.Len() > 0 {
-		labels := make([]string, 0, 4)
-		for {
-			size, err := reader.ReadByte()
-			if err != nil {
-				return result
-			}
-			if size == 0 {
-				if len(labels) > 0 {
-					result = append(result, strings.Join(labels, "."))
-				}
-				break
-			}
-			if int(size) > reader.Len() {
-				return result
-			}
-			label := make([]byte, int(size))
-			_, _ = reader.Read(label)
-			labels = append(labels, string(label))
-		}
-	}
-	return result
 }

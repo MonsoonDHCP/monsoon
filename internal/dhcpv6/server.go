@@ -102,9 +102,3 @@ func (s *Server) Close() error {
 	s.conn = nil
 	return err
 }
-
-func (s *Server) Running() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.running
-}

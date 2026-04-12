@@ -42,7 +42,7 @@ func TestTriggerScanAndReadStatus(t *testing.T) {
 		t.Fatalf("upsert lease: %v", err)
 	}
 
-	engine := NewEngine(eng, leaseStore, ipamEngine, time.Hour)
+	engine := NewEngineWithOptions(eng, leaseStore, ipamEngine, time.Hour, Options{})
 	scanID, err := engine.TriggerScan(context.Background(), ScanRequest{Reason: "test"})
 	if err != nil {
 		t.Fatalf("trigger scan: %v", err)

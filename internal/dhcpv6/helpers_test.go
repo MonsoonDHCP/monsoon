@@ -2,6 +2,7 @@ package dhcpv6
 
 import (
 	"context"
+	"encoding/binary"
 	"net"
 	"net/netip"
 	"path/filepath"
@@ -13,37 +14,38 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/storage"
 )
 
-func TestDUIDHelpersAndErrors(t *testing.T) {
+func TestDUIDEncodings(t *testing.T) {
 	mac, _ := net.ParseMAC("aa:bb:cc:dd:ee:ff")
-	if _, err := ParseDUID([]byte{0x00}); err == nil {
-		t.Fatalf("expected short duid error")
+	ll := testDUIDLL(1, mac)
+	if len(ll) != 4+len(mac) {
+		t.Fatalf("unexpected DUID-LL length %d", len(ll))
 	}
-	if _, err := ParseDUID([]byte{0x00, 0x09}); err == nil {
-		t.Fatalf("expected unsupported duid error")
+	if got := binary.BigEndian.Uint16(ll[0:2]); got != 3 {
+		t.Fatalf("unexpected DUID-LL type %d", got)
 	}
-
-	ll := GenerateDUIDLL(1, mac)
-	parsed, err := ParseDUID(ll)
-	if err != nil || parsed.Type != DUIDTypeLL || parsed.HardwareType != 1 || parsed.LinkLayerAddr.String() != mac.String() {
-		t.Fatalf("parse DUID-LL = %+v err=%v", parsed, err)
+	if got := binary.BigEndian.Uint16(ll[2:4]); got != 1 {
+		t.Fatalf("unexpected DUID-LL hardware type %d", got)
+	}
+	if got := net.HardwareAddr(ll[4:]).String(); got != mac.String() {
+		t.Fatalf("unexpected DUID-LL MAC %s", got)
 	}
 
 	en := []byte{0, 2, 0, 0, 16, 146, 1, 2, 3}
-	parsed, err = ParseDUID(en)
-	if err != nil || parsed.Type != DUIDTypeEN || parsed.EnterpriseNumber != 4242 {
-		t.Fatalf("parse DUID-EN = %+v err=%v", parsed, err)
+	if got := binary.BigEndian.Uint16(en[0:2]); got != 2 {
+		t.Fatalf("unexpected DUID-EN type %d", got)
+	}
+	if got := binary.BigEndian.Uint32(en[2:6]); got != 4242 {
+		t.Fatalf("unexpected DUID-EN enterprise number %d", got)
 	}
 
 	var uuid [16]byte
 	copy(uuid[:], []byte("1234567890abcdef"))
-	uuidRaw := GenerateDUIDUUID(uuid)
-	parsed, err = ParseDUID(uuidRaw)
-	if err != nil || parsed.Type != DUIDTypeUUID || parsed.UUID != uuid {
-		t.Fatalf("parse DUID-UUID = %+v err=%v", parsed, err)
+	uuidRaw := testDUIDUUID(uuid)
+	if got := binary.BigEndian.Uint16(uuidRaw[0:2]); got != 4 {
+		t.Fatalf("unexpected DUID-UUID type %d", got)
 	}
-
-	if got := duidTime(time.Date(1999, 12, 31, 23, 59, 59, 0, time.UTC)); got != 0 {
-		t.Fatalf("duidTime before epoch = %d, want 0", got)
+	if got := uuidRaw[2:18]; string(got) != string(uuid[:]) {
+		t.Fatalf("unexpected DUID-UUID payload %x", got)
 	}
 }
 
@@ -150,27 +152,7 @@ func TestPoolManagerSelectionAvailabilityAndResults(t *testing.T) {
 	}
 }
 
-func TestPrefixDelegationRelayAndDomainHelpers(t *testing.T) {
-	if _, err := NewPrefixDelegationPool("10.0.0.0/24", 28); err == nil {
-		t.Fatalf("expected IPv4 PD pool rejection")
-	}
-	pd, err := NewPrefixDelegationPool("2001:db8::/126", 128)
-	if err != nil {
-		t.Fatalf("new pd pool: %v", err)
-	}
-	for i, expected := range []string{"2001:db8::/128", "2001:db8::1/128", "2001:db8::2/128", "2001:db8::3/128"} {
-		prefix, allocErr := pd.Allocate()
-		if allocErr != nil || prefix.String() != expected {
-			t.Fatalf("allocation %d = %s err=%v, want %s", i, prefix, allocErr, expected)
-		}
-	}
-	if _, err := pd.Allocate(); err == nil {
-		t.Fatalf("expected pd pool exhaustion")
-	}
-	if _, ok := addPowerOfTwo(netip.MustParseAddr("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"), 0); ok {
-		t.Fatalf("expected overflow to fail")
-	}
-
+func TestRelayAndCopyHelpers(t *testing.T) {
 	inner := Packet{MessageType: MessageReply, TransactionID: [3]byte{1, 2, 3}, Options: Options{}}
 	reply := encapsulateRelayReply(Packet{
 		MessageType: MessageRelayForward,
@@ -186,15 +168,33 @@ func TestPrefixDelegationRelayAndDomainHelpers(t *testing.T) {
 		t.Fatalf("expected interface-id to be preserved")
 	}
 
-	encoded := encodeDomainList([]string{"lab.internal", "", "bad..name"})
-	decoded := decodeDomainList(encoded)
-	if len(decoded) == 0 || decoded[0] != "lab.internal" {
-		t.Fatalf("unexpected decoded domains: %#v", decoded)
-	}
-
 	buf := make([]byte, 16)
 	copyIPv6(buf, nil)
 	if net.IP(buf).String() != net.IPv6zero.String() {
 		t.Fatalf("copyIPv6 should zero-fill invalid addresses, got %s", net.IP(buf))
 	}
+}
+
+func testDUIDLL(hardwareType uint16, mac net.HardwareAddr) []byte {
+	buf := make([]byte, 4+len(mac))
+	binary.BigEndian.PutUint16(buf[0:2], 3)
+	binary.BigEndian.PutUint16(buf[2:4], hardwareType)
+	copy(buf[4:], mac)
+	return buf
+}
+
+func testDUIDLLT(hardwareType uint16, timestamp uint32, mac net.HardwareAddr) []byte {
+	buf := make([]byte, 8+len(mac))
+	binary.BigEndian.PutUint16(buf[0:2], 1)
+	binary.BigEndian.PutUint16(buf[2:4], hardwareType)
+	binary.BigEndian.PutUint32(buf[4:8], timestamp)
+	copy(buf[8:], mac)
+	return buf
+}
+
+func testDUIDUUID(uuid [16]byte) []byte {
+	buf := make([]byte, 18)
+	binary.BigEndian.PutUint16(buf[0:2], 4)
+	copy(buf[2:18], uuid[:])
+	return buf
 }

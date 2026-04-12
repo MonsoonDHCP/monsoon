@@ -168,7 +168,7 @@ func TestBuildTargetsPoolBoundsAndPersistence(t *testing.T) {
 		t.Fatalf("latest rogue servers = %#v, err = %v", rogue, err)
 	}
 
-	reloaded := NewEngine(eng, nil, nil, time.Minute)
+	reloaded := NewEngineWithOptions(eng, nil, nil, time.Minute, Options{})
 	if reloaded.latestID != "scan-1" || reloaded.lastScanAt.IsZero() || reloaded.nextScanAt.IsZero() {
 		t.Fatalf("metadata was not loaded: latest=%q last=%v next=%v", reloaded.latestID, reloaded.lastScanAt, reloaded.nextScanAt)
 	}
@@ -216,7 +216,7 @@ func TestSubnetScopedPersistencePreservesUnrelatedPreviousHosts(t *testing.T) {
 	}
 	defer eng.Close()
 
-	engine := NewEngine(eng, nil, nil, time.Minute)
+	engine := NewEngineWithOptions(eng, nil, nil, time.Minute, Options{})
 	first := ScanResult{
 		ScanID:      "scan-all",
 		Status:      "completed",

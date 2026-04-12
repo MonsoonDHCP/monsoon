@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -39,8 +40,8 @@ func TestGRPCUnarySubnetAndAddressRPCs(t *testing.T) {
 	if got := trailer.Get("Grpc-Status"); got != "0" {
 		t.Fatalf("expected grpc success, got %q", got)
 	}
-	var created subnetMessage
-	if err := created.unmarshalProto(payload); err != nil {
+	created, err := decodeSubnetMessageTest(payload)
+	if err != nil {
 		t.Fatalf("unmarshal subnet: %v", err)
 	}
 	if created.CIDR != "10.0.1.0/24" || created.Name != "Users" {
@@ -51,8 +52,8 @@ func TestGRPCUnarySubnetAndAddressRPCs(t *testing.T) {
 	if got := trailer.Get("Grpc-Status"); got != "0" {
 		t.Fatalf("expected grpc success, got %q", got)
 	}
-	var gotSubnet subnetMessage
-	if err := gotSubnet.unmarshalProto(payload); err != nil {
+	gotSubnet, err := decodeSubnetMessageTest(payload)
+	if err != nil {
 		t.Fatalf("unmarshal get subnet: %v", err)
 	}
 	if gotSubnet.Gateway != "10.0.1.1" || gotSubnet.VLAN != 100 {
@@ -63,8 +64,8 @@ func TestGRPCUnarySubnetAndAddressRPCs(t *testing.T) {
 	if got := trailer.Get("Grpc-Status"); got != "0" {
 		t.Fatalf("expected grpc success, got %q", got)
 	}
-	var addr ipAddressMessage
-	if err := addr.unmarshalProto(payload); err != nil {
+	addr, err := decodeIPAddressMessageTest(payload)
+	if err != nil {
 		t.Fatalf("unmarshal address: %v", err)
 	}
 	if addr.IP != "10.0.1.10" || addr.State != string(ipam.IPStateAvailable) {
@@ -110,8 +111,8 @@ func TestGRPCStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read lease stream frame: %v", err)
 	}
-	var leaseEvent leaseEventMessage
-	if err := leaseEvent.unmarshalProto(frame); err != nil {
+	leaseEvent, err := decodeLeaseEventMessageTest(frame)
+	if err != nil {
 		t.Fatalf("unmarshal lease event: %v", err)
 	}
 	if leaseEvent.Type != "lease.released" || leaseEvent.IP != "10.0.2.11" {
@@ -138,8 +139,8 @@ func TestGRPCStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read discovery completed frame: %v", err)
 	}
-	var completed discoveryEventMessage
-	if err := completed.unmarshalProto(frame); err != nil {
+	completed, err := decodeDiscoveryEventMessageTest(frame)
+	if err != nil {
 		t.Fatalf("unmarshal discovery completed event: %v", err)
 	}
 	if completed.Type != "discovery.completed" || completed.ScanID != "scan-1" || completed.Found != 5 {
@@ -150,8 +151,8 @@ func TestGRPCStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read discovery conflict frame: %v", err)
 	}
-	var conflict discoveryEventMessage
-	if err := conflict.unmarshalProto(frame); err != nil {
+	conflict, err := decodeDiscoveryEventMessageTest(frame)
+	if err != nil {
 		t.Fatalf("unmarshal discovery conflict event: %v", err)
 	}
 	if conflict.Type != "discovery.conflict" || conflict.IP != "10.0.2.99" || len(conflict.MACs) != 2 {
@@ -177,10 +178,7 @@ func TestAuthorizeHonorsAuthEnforcement(t *testing.T) {
 		t.Fatalf("expected unauthenticated code, got %d", status.code)
 	}
 
-	ctx := restapi.WithIdentity(restapi.WithAuthEnforcement(context.Background(), true), auth.Identity{
-		Username: "viewer",
-		Role:     auth.DefaultRoleViewer,
-	})
+	ctx := authenticatedContextForTest(t, auth.DefaultRoleViewer)
 	err = authorize(ctx, auth.DefaultRoleAdmin)
 	if err == nil {
 		t.Fatalf("expected viewer to be denied")
@@ -202,8 +200,8 @@ func TestGRPCSystemHealthRPCs(t *testing.T) {
 	if got := trailer.Get("Grpc-Status"); got != "0" {
 		t.Fatalf("expected grpc success, got %q", got)
 	}
-	var health systemHealthResponse
-	if err := health.unmarshalProto(payload); err != nil {
+	health, err := decodeSystemHealthResponseTest(payload)
+	if err != nil {
 		t.Fatalf("unmarshal health response: %v", err)
 	}
 	if health.Status != "healthy" || !health.Ready {
@@ -226,8 +224,8 @@ func TestGRPCSystemHealthRPCs(t *testing.T) {
 	if got := trailer.Get("Grpc-Status"); got != "0" {
 		t.Fatalf("expected grpc success for readiness rpc, got %q", got)
 	}
-	var readiness systemHealthResponse
-	if err := readiness.unmarshalProto(payload); err != nil {
+	readiness, err := decodeSystemHealthResponseTest(payload)
+	if err != nil {
 		t.Fatalf("unmarshal readiness response: %v", err)
 	}
 	if readiness.Status != "degraded" || readiness.Ready {
@@ -267,7 +265,7 @@ func newTestStack(t *testing.T) *testStack {
 	}
 	leaseStore := lease.NewStore(engine)
 	ipamEngine := ipam.NewEngine(engine, leaseStore)
-	discoveryEngine := discovery.NewEngine(engine, leaseStore, ipamEngine, time.Hour)
+	discoveryEngine := discovery.NewEngineWithOptions(engine, leaseStore, ipamEngine, time.Hour, discovery.Options{})
 	broker := events.NewBroker(16)
 
 	handlerDeps := HandlerDeps{
@@ -402,4 +400,33 @@ func readFrame(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return payload, nil
+}
+
+func authenticatedContextForTest(t *testing.T, role string) context.Context {
+	t.Helper()
+	eng, err := storage.OpenEngine(t.TempDir(), []string{"users", "api_tokens", "api_tokens_by_hash"})
+	if err != nil {
+		t.Fatalf("open auth storage: %v", err)
+	}
+	t.Cleanup(func() { _ = eng.Close() })
+
+	service := auth.NewService(eng, auth.ServiceOptions{CookieName: "monsoon_session", SessionDuration: time.Hour})
+	_, token, err := service.CreateToken(context.Background(), "test-"+role, role, nil, "test token")
+	if err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	var captured context.Context
+	handler := restapi.AuthMiddlewareFunc(service, func() bool { return true })(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured = r.Context()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/internal/test", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNoContent || captured == nil {
+		t.Fatalf("failed to capture authenticated context, code=%d", rr.Code)
+	}
+	return captured
 }

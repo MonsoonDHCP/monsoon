@@ -411,7 +411,7 @@ func TestLoggingMiddlewareLogsForwardedIPAndIdentity(t *testing.T) {
 
 	identityMiddleware := func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx := WithIdentity(r.Context(), auth.Identity{
+			ctx := withTestIdentity(r.Context(), auth.Identity{
 				Username: "alice",
 				Role:     auth.DefaultRoleAdmin,
 				AuthType: "session",

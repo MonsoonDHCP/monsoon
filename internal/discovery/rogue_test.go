@@ -48,7 +48,7 @@ func TestRecordRogueServerPersistsLatestList(t *testing.T) {
 	}
 	defer eng.Close()
 
-	engine := NewEngine(eng, nil, nil, time.Minute)
+	engine := NewEngineWithOptions(eng, nil, nil, time.Minute, Options{})
 	if err := engine.RecordRogueServer(context.Background(), RogueServer{
 		IP:       "10.0.0.250",
 		MAC:      "00:50:56:AA:BB:CC",
@@ -77,7 +77,7 @@ func TestRecordRogueServerPersistsLatestList(t *testing.T) {
 		t.Fatal("expected status to reflect rogue detection")
 	}
 
-	reloaded := NewEngine(eng, nil, nil, time.Minute)
+	reloaded := NewEngineWithOptions(eng, nil, nil, time.Minute, Options{})
 	rogue, err = reloaded.LatestRogueServers(context.Background())
 	if err != nil || len(rogue) != 2 {
 		t.Fatalf("reloaded rogue servers = %#v, err = %v", rogue, err)

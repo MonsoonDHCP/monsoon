@@ -1,6 +1,7 @@
 package dhcpv6
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"testing"
@@ -15,7 +16,7 @@ func TestHandleSolicitRequestRenewReleaseAndInfo(t *testing.T) {
 	store, handler, serverDUID := newTestHandler(t)
 	defer func() { _ = store.Close() }()
 
-	clientDUID := GenerateDUIDLL(1, mustMAC("00:11:22:33:44:55"))
+	clientDUID := testDUIDLL(1, mustMAC("00:11:22:33:44:55"))
 	req := Packet{
 		MessageType:   MessageSolicit,
 		TransactionID: [3]byte{1, 2, 3},
@@ -134,7 +135,7 @@ func TestHandleSolicitRequestRenewReleaseAndInfo(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected info-request domain list option: %+v", resp)
 	}
-	if got := decodeDomainList(raw); len(got) != 1 || got[0] != "lab.internal" {
+	if !bytes.Equal(raw, encodeDomainList([]string{"lab.internal"})) {
 		t.Fatalf("unexpected info-request response: %+v", resp)
 	}
 }
@@ -143,7 +144,7 @@ func TestHandleRelayForward(t *testing.T) {
 	store, handler, _ := newTestHandler(t)
 	defer func() { _ = store.Close() }()
 
-	clientDUID := GenerateDUIDLL(1, mustMAC("00:11:22:33:44:56"))
+	clientDUID := testDUIDLL(1, mustMAC("00:11:22:33:44:56"))
 	inner := Packet{
 		MessageType:   MessageSolicit,
 		TransactionID: [3]byte{2, 2, 2},
@@ -205,7 +206,7 @@ func newTestHandler(t *testing.T) (*storage.Engine, *Handler, []byte) {
 	if err != nil {
 		t.Fatalf("NewPoolManager() error = %v", err)
 	}
-	serverDUID := GenerateDUIDLL(1, mustMAC("aa:bb:cc:dd:ee:ff"))
+	serverDUID := testDUIDLL(1, mustMAC("aa:bb:cc:dd:ee:ff"))
 	handler := NewHandler(leaseStore, pools, serverDUID, time.Hour, 2*time.Hour)
 	handler.SetDomainList([]string{"lab.internal"})
 	return engine, handler, serverDUID

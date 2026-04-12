@@ -38,7 +38,7 @@ func TestDurationUnmarshalRejectsInvalidValue(t *testing.T) {
 }
 
 func TestCloneAndNewDefaultsReturnIndependentConfigs(t *testing.T) {
-	cfg := NewDefaults()
+	cfg := DefaultConfig()
 	clone := cfg.Clone()
 	clone.Server.Hostname = "changed"
 	if cfg.Server.Hostname == clone.Server.Hostname {

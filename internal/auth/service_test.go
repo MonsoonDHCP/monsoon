@@ -245,7 +245,4 @@ func TestServiceSupportsLocalAuthByConfiguredMode(t *testing.T) {
 	if ldapSvc.SupportsLocalAuth() {
 		t.Fatalf("expected ldap auth type to disable local auth support")
 	}
-	if ldapSvc.AuthType() != "ldap" {
-		t.Fatalf("unexpected auth type: %q", ldapSvc.AuthType())
-	}
 }

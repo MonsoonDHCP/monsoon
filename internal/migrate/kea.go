@@ -2,6 +2,7 @@ package migrate
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"net/netip"
@@ -89,6 +90,7 @@ func (r *Runner) importKeaConfig(ctx context.Context, path string, dryRun bool, 
 		Path: path,
 	}
 
+	// #nosec G304 -- migration source path is explicitly provided by operator.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		report.Errors = append(report.Errors, RowError{Row: 0, Message: err.Error()})
@@ -366,7 +368,9 @@ func lastIPv4InPrefix(prefix netip.Prefix) netip.Addr {
 		mask = (uint32(1) << uint(hostBits)) - 1
 	}
 	end := value | mask
-	return netip.AddrFrom4([4]byte{byte(end >> 24), byte(end >> 16), byte(end >> 8), byte(end)})
+	var out [4]byte
+	binary.BigEndian.PutUint32(out[:], end)
+	return netip.AddrFrom4(out)
 }
 
 func stripJSONComments(input []byte) []byte {

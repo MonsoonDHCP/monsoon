@@ -192,13 +192,14 @@ func (h *Handler) handleRenew(ctx context.Context, req Packet, relayAddr net.IP)
 		h.onLeaseEvent("lease.renewed", item)
 	}
 	addr := net.ParseIP(item.IP)
+	leaseSec := durationToUint32Seconds(item.Duration)
 	alloc := AllocationResult{
 		IP:                addr,
 		LeaseDuration:     item.Duration,
 		SubnetID:          item.SubnetID,
 		IAID:              firstIANA(req.Options.IANAs()).IAID,
-		PreferredLifetime: uint32(item.Duration / time.Second / 2),
-		ValidLifetime:     uint32(item.Duration / time.Second),
+		PreferredLifetime: leaseSec / 2,
+		ValidLifetime:     leaseSec,
 	}
 	resp := h.baseResponse(req, MessageReply)
 	resp.Options = h.replyOptions(req, alloc, false)
@@ -298,7 +299,7 @@ func (h *Handler) replyOptions(req Packet, alloc AllocationResult, includeRapid 
 	opts.AddIANA(IANA{
 		IAID: alloc.IAID,
 		T1:   alloc.PreferredLifetime,
-		T2:   alloc.ValidLifetime * 7 / 8,
+		T2:   alloc.ValidLifetime - alloc.ValidLifetime/8,
 		Options: Options{
 			{Code: OptionIAAddr, Value: addr.Encode()},
 		},

@@ -1,6 +1,10 @@
 package ipam
 
-import "net/netip"
+import (
+	"encoding/binary"
+	"math"
+	"net/netip"
+)
 
 func Overlaps(a, b netip.Prefix) bool {
 	a = a.Masked()
@@ -33,6 +37,11 @@ func NthAddress(prefix netip.Prefix, n uint64) (netip.Addr, bool) {
 	if n >= AddressCount(prefix) {
 		return netip.Addr{}, false
 	}
-	out := [4]byte{byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value)}
+	if value > math.MaxUint32 {
+		return netip.Addr{}, false
+	}
+	var out [4]byte
+	// #nosec G115 -- value is bounded to uint32 range above.
+	binary.BigEndian.PutUint32(out[:], uint32(value))
 	return netip.AddrFrom4(out), true
 }

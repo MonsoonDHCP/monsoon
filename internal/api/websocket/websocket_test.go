@@ -57,7 +57,9 @@ func TestHubBroadcastWithSubscription(t *testing.T) {
 	writeMaskedTextFrame(t, conn, `{"action":"subscribe","events":["discovery.*"]}`)
 	time.Sleep(50 * time.Millisecond)
 	broker.Publish(events.Event{Type: "lease.released", Data: map[string]any{"ip": "10.0.1.20"}})
-	conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	if err := conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond)); err != nil {
+		t.Fatalf("set read deadline: %v", err)
+	}
 	if _, _, err := readFrame(reader); err == nil {
 		t.Fatalf("unexpected event for unsubscribed topic")
 	}

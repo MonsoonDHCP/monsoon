@@ -10,6 +10,12 @@ import (
 	"github.com/monsoondhcp/monsoon/internal/lease"
 )
 
+const (
+	maxIntValue      = int(^uint(0) >> 1)
+	minIntValue      = -maxIntValue - 1
+	maxInt64AsUint64 = uint64(^uint64(0) >> 1)
+)
+
 type emptyMessage struct{}
 
 func (emptyMessage) marshalProto() []byte { return nil }
@@ -85,7 +91,11 @@ func (r *subnetMutationRequest) unmarshalProto(data []byte) error {
 		case 2:
 			r.Name = strings.TrimSpace(string(raw))
 		case 3:
-			r.VLAN = int(value)
+			vlan, ok := uint64ToInt(value)
+			if !ok {
+				return fmt.Errorf("vlan value out of range")
+			}
+			r.VLAN = vlan
 		case 4:
 			r.Gateway = strings.TrimSpace(string(raw))
 		case 5:
@@ -97,7 +107,11 @@ func (r *subnetMutationRequest) unmarshalProto(data []byte) error {
 		case 8:
 			r.PoolEnd = strings.TrimSpace(string(raw))
 		case 9:
-			r.LeaseSec = int64(value)
+			leaseSec, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("lease duration value out of range")
+			}
+			r.LeaseSec = leaseSec
 		}
 		return nil
 	})
@@ -196,7 +210,11 @@ func (r *listLeasesRequest) unmarshalProto(data []byte) error {
 		case 3:
 			r.Query = strings.TrimSpace(string(raw))
 		case 4:
-			r.Limit = int(value)
+			limit, ok := uint64ToInt(value)
+			if !ok {
+				return fmt.Errorf("limit value out of range")
+			}
+			r.Limit = limit
 		}
 		return nil
 	})
@@ -336,7 +354,11 @@ func (r *searchAddressesRequest) unmarshalProto(data []byte) error {
 		case 3:
 			r.Query = strings.TrimSpace(string(raw))
 		case 4:
-			r.Limit = int(value)
+			limit, ok := uint64ToInt(value)
+			if !ok {
+				return fmt.Errorf("limit value out of range")
+			}
+			r.Limit = limit
 		}
 		return nil
 	})
@@ -643,12 +665,24 @@ func mustInt(value any) int {
 	case int32:
 		return int(v)
 	case int64:
-		return int(v)
+		if converted, ok := int64ToInt(v); ok {
+			return converted
+		}
+		return 0
 	case uint32:
-		return int(v)
+		if converted, ok := uint64ToInt(uint64(v)); ok {
+			return converted
+		}
+		return 0
 	case uint64:
-		return int(v)
+		if converted, ok := uint64ToInt(v); ok {
+			return converted
+		}
+		return 0
 	case float64:
+		if v > float64(maxIntValue) || v < float64(minIntValue) {
+			return 0
+		}
 		return int(v)
 	case string:
 		n, _ := strconv.Atoi(strings.TrimSpace(v))
@@ -656,6 +690,27 @@ func mustInt(value any) int {
 	default:
 		return 0
 	}
+}
+
+func uint64ToInt(value uint64) (int, bool) {
+	if value > uint64(maxIntValue) {
+		return 0, false
+	}
+	return int(value), true
+}
+
+func uint64ToInt64(value uint64) (int64, bool) {
+	if value > maxInt64AsUint64 {
+		return 0, false
+	}
+	return int64(value), true
+}
+
+func int64ToInt(value int64) (int, bool) {
+	if value > int64(maxIntValue) || value < int64(minIntValue) {
+		return 0, false
+	}
+	return int(value), true
 }
 
 func mustStrings(value any) []string {

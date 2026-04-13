@@ -73,6 +73,7 @@ func (o Options) Encode() ([]byte, error) {
 		}
 		buf := make([]byte, 4)
 		binary.BigEndian.PutUint16(buf[0:2], item.Code)
+		// #nosec G115 -- len(item.Value) is bounded to <=65535 above.
 		binary.BigEndian.PutUint16(buf[2:4], uint16(len(item.Value)))
 		out = append(out, buf...)
 		out = append(out, item.Value...)
@@ -255,6 +256,7 @@ func encodeDomainList(domains []string) []byte {
 			if label == "" || len(label) > 63 {
 				continue
 			}
+			// #nosec G115 -- label length is bounded to <=63 above.
 			out = append(out, byte(len(label)))
 			out = append(out, []byte(label)...)
 		}

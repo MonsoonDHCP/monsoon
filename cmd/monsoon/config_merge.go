@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 
 	"github.com/monsoondhcp/monsoon/internal/config"
@@ -8,6 +9,10 @@ import (
 )
 
 func mergeConfigPayload(current *config.Config, payload map[string]any) (*config.Config, error) {
+	if err := validateConfigPayload(payload); err != nil {
+		return nil, err
+	}
+
 	base := config.DefaultConfig()
 	if current != nil {
 		base = current.Clone()
@@ -29,6 +34,23 @@ func mergeConfigPayload(current *config.Config, payload map[string]any) (*config
 		return nil, fmt.Errorf("decode merged config: %w", err)
 	}
 	return next, nil
+}
+
+func validateConfigPayload(payload map[string]any) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	raw, err := yaml.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode payload: %w", err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(raw))
+	dec.KnownFields(true)
+	var probe config.Config
+	if err := dec.Decode(&probe); err != nil {
+		return fmt.Errorf("invalid config payload: %w", err)
+	}
+	return nil
 }
 
 func configToMap(cfg *config.Config) (map[string]any, error) {

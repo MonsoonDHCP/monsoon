@@ -2,7 +2,7 @@ package websocket
 
 import (
 	"bufio"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- RFC 6455 mandates SHA-1 for Sec-WebSocket-Accept.
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -30,6 +30,7 @@ const (
 	writeBufferSize = 32
 	pingInterval    = 25 * time.Second
 	writeTimeout    = 10 * time.Second
+	maxFramePayload = 1 << 20 // 1 MiB
 )
 
 type Client struct {
@@ -40,6 +41,7 @@ type Client struct {
 
 	send chan EventMessage
 
+	writeMu       sync.Mutex
 	mu            sync.RWMutex
 	subscriptions []string
 
@@ -280,17 +282,29 @@ func (c *Client) writeControlFrame(opcode byte, payload []byte) error {
 }
 
 func (c *Client) writeFrame(opcode byte, payload []byte) error {
+	if len(payload) > maxFramePayload {
+		return fmt.Errorf("websocket frame payload too large: %d", len(payload))
+	}
+
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+
 	_ = c.conn.SetWriteDeadline(time.Now().Add(writeTimeout))
 	header := []byte{0x80 | opcode}
+	payloadLen := len(payload)
 	switch {
-	case len(payload) < 126:
-		header = append(header, byte(len(payload)))
-	case len(payload) <= 65535:
-		header = append(header, 126, byte(len(payload)>>8), byte(len(payload)))
+	case payloadLen < 126:
+		// #nosec G115 -- payloadLen < 126 guarantees safe uint8 narrowing.
+		header = append(header, byte(payloadLen))
+	case payloadLen <= 65535:
+		var size [2]byte
+		// #nosec G115 -- payloadLen <= 65535 guarantees safe uint16 narrowing.
+		binary.BigEndian.PutUint16(size[:], uint16(payloadLen))
+		header = append(header, 126, size[0], size[1])
 	default:
 		header = append(header, 127)
 		size := make([]byte, 8)
-		binary.BigEndian.PutUint64(size, uint64(len(payload)))
+		binary.BigEndian.PutUint64(size, uint64(payloadLen))
 		header = append(header, size...)
 	}
 	if _, err := c.writer.Write(header); err != nil {
@@ -339,6 +353,9 @@ func (c *Client) readFrame() (frameHeader, []byte, error) {
 		}
 		header.length = binary.BigEndian.Uint64(buf)
 	}
+	if header.length > maxFramePayload {
+		return header, nil, fmt.Errorf("websocket frame payload too large: %d", header.length)
+	}
 
 	var maskKey [4]byte
 	if header.masked {
@@ -361,6 +378,7 @@ func (c *Client) readFrame() (frameHeader, []byte, error) {
 }
 
 func websocketAccept(key string) string {
+	// #nosec G401 -- RFC 6455 handshake requires SHA-1 here.
 	sum := sha1.Sum([]byte(key + websocketGUID))
 	return base64.StdEncoding.EncodeToString(sum[:])
 }

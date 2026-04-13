@@ -316,6 +316,25 @@ func TestHAAllocationScopeModes(t *testing.T) {
 	}
 }
 
+func TestSplitScopeHandlesHighUint32Ranges(t *testing.T) {
+	start := ^uint32(0) - 9
+	end := ^uint32(0)
+
+	lowerStart, lowerEnd, upperStart, upperEnd := splitScope(start, end)
+	if lowerStart != start {
+		t.Fatalf("unexpected lowerStart: got=%d want=%d", lowerStart, start)
+	}
+	if lowerEnd < lowerStart || lowerEnd > end {
+		t.Fatalf("unexpected lower range: %d-%d", lowerStart, lowerEnd)
+	}
+	if upperStart <= lowerEnd {
+		t.Fatalf("expected upperStart > lowerEnd, got upperStart=%d lowerEnd=%d", upperStart, lowerEnd)
+	}
+	if upperEnd != end {
+		t.Fatalf("unexpected upperEnd: got=%d want=%d", upperEnd, end)
+	}
+}
+
 func TestHALoadSharingReplicatesFromBothPeers(t *testing.T) {
 	portA := freePort(t)
 	portB := freePort(t)

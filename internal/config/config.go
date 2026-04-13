@@ -365,6 +365,7 @@ func Load(path string) (*Config, error) {
 	}
 	cfg := DefaultConfig()
 
+	// #nosec G304 -- config path is operator-provided CLI/runtime configuration path.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -401,7 +402,7 @@ func WriteDefault(path string, overwrite bool) error {
 			return fmt.Errorf("config already exists at %s", path)
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create config dir: %w", err)
 	}
 	body, err := yaml.Marshal(DefaultConfig())

@@ -195,17 +195,18 @@ func run() int {
 			log.Printf("backup failed: %v", err)
 			return 1
 		}
-		if err := os.MkdirAll(filepath.Dir(backupPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(backupPath), 0o750); err != nil {
 			log.Printf("backup dir failed: %v", err)
 			return 1
 		}
 		from := filepath.Join(cfg.Server.DataDir, "storage", "snapshot.bin")
+		// #nosec G304 -- source path is built from trusted runtime configuration.
 		body, err := os.ReadFile(from)
 		if err != nil {
 			log.Printf("backup source read failed: %v", err)
 			return 1
 		}
-		if err := os.WriteFile(backupPath, body, 0o600); err != nil {
+		if err := atomicWriteFile(backupPath, body, 0o600); err != nil {
 			log.Printf("backup write failed: %v", err)
 			return 1
 		}
@@ -575,7 +576,7 @@ func run() int {
 			if err != nil {
 				return nil, err
 			}
-			if err := os.WriteFile(configPath, body, 0o600); err != nil {
+			if err := atomicWriteFile(configPath, body, 0o600); err != nil {
 				return nil, err
 			}
 			if err := cfgManager.Reload(); err != nil {
@@ -598,7 +599,7 @@ func run() int {
 			if strings.TrimSpace(backupDir) == "" {
 				backupDir = filepath.Join(snapshot.Server.DataDir, "backups")
 			}
-			if err := os.MkdirAll(backupDir, 0o755); err != nil {
+			if err := os.MkdirAll(backupDir, 0o750); err != nil {
 				return rest.SystemBackup{}, err
 			}
 
@@ -607,11 +608,12 @@ func run() int {
 			src := filepath.Join(snapshot.Server.DataDir, "storage", "snapshot.bin")
 			dst := filepath.Join(backupDir, name)
 
+			// #nosec G304 -- snapshot source path is built from trusted runtime configuration.
 			body, err := os.ReadFile(src)
 			if err != nil {
 				return rest.SystemBackup{}, err
 			}
-			if err := os.WriteFile(dst, body, 0o600); err != nil {
+			if err := atomicWriteFile(dst, body, 0o600); err != nil {
 				return rest.SystemBackup{}, err
 			}
 			abs, _ := filepath.Abs(dst)

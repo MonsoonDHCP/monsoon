@@ -117,7 +117,7 @@ func TestLeaseGetAndReleaseRoutes(t *testing.T) {
 
 func TestDashboardStaticFallback(t *testing.T) {
 	dist := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<html><body>ok</body></html>"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dist, "index.html"), []byte("<html><body>ok</body></html>"), 0o600); err != nil {
 		t.Fatalf("write index: %v", err)
 	}
 

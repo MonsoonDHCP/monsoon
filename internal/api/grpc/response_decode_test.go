@@ -1,5 +1,7 @@
 package grpc
 
+import "fmt"
+
 func decodeSystemHealthResponseTest(data []byte) (systemHealthResponse, error) {
 	var out systemHealthResponse
 	err := readProtoFields(data, func(field int, wireType int, raw []byte, value uint64) error {
@@ -29,7 +31,11 @@ func decodeSubnetMessageTest(data []byte) (subnetMessage, error) {
 		case 2:
 			out.Name = string(raw)
 		case 3:
-			out.VLAN = int(value)
+			vlan, ok := uint64ToInt(value)
+			if !ok {
+				return fmt.Errorf("vlan value out of range")
+			}
+			out.VLAN = vlan
 		case 4:
 			out.Gateway = string(raw)
 		case 5:
@@ -41,11 +47,23 @@ func decodeSubnetMessageTest(data []byte) (subnetMessage, error) {
 		case 8:
 			out.PoolEnd = string(raw)
 		case 9:
-			out.LeaseSec = int64(value)
+			leaseSec, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("lease value out of range")
+			}
+			out.LeaseSec = leaseSec
 		case 10:
-			out.CreatedAt = int64(value)
+			createdAt, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("created_at value out of range")
+			}
+			out.CreatedAt = createdAt
 		case 11:
-			out.UpdatedAt = int64(value)
+			updatedAt, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("updated_at value out of range")
+			}
+			out.UpdatedAt = updatedAt
 		}
 		return nil
 	})
@@ -69,11 +87,23 @@ func decodeLeaseMessageTest(data []byte) (leaseMessage, error) {
 		case 6:
 			out.RelayAddr = string(raw)
 		case 7:
-			out.ExpiryUnix = int64(value)
+			expiryUnix, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("expiry_unix value out of range")
+			}
+			out.ExpiryUnix = expiryUnix
 		case 8:
-			out.UpdatedAt = int64(value)
+			updatedAt, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("updated_at value out of range")
+			}
+			out.UpdatedAt = updatedAt
 		case 9:
-			out.Duration = int64(value)
+			duration, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("duration value out of range")
+			}
+			out.Duration = duration
 		}
 		return nil
 	})
@@ -95,7 +125,11 @@ func decodeLeaseEventMessageTest(data []byte) (leaseEventMessage, error) {
 			}
 			out.Lease = &item
 		case 4:
-			out.OccurredAt = int64(value)
+			occurredAt, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("occurred_at value out of range")
+			}
+			out.OccurredAt = occurredAt
 		}
 		return nil
 	})
@@ -121,7 +155,11 @@ func decodeIPAddressMessageTest(data []byte) (ipAddressMessage, error) {
 		case 7:
 			out.Source = string(raw)
 		case 8:
-			out.UpdatedAt = int64(value)
+			updatedAt, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("updated_at value out of range")
+			}
+			out.UpdatedAt = updatedAt
 		}
 		return nil
 	})
@@ -141,11 +179,19 @@ func decodeDiscoveryEventMessageTest(data []byte) (discoveryEventMessage, error)
 		case 4:
 			out.IP = string(raw)
 		case 5:
-			out.Found = int(value)
+			found, ok := uint64ToInt(value)
+			if !ok {
+				return fmt.Errorf("found value out of range")
+			}
+			out.Found = found
 		case 6:
 			out.MACs = append(out.MACs, string(raw))
 		case 7:
-			out.OccurredAt = int64(value)
+			occurredAt, ok := uint64ToInt64(value)
+			if !ok {
+				return fmt.Errorf("occurred_at value out of range")
+			}
+			out.OccurredAt = occurredAt
 		case 8:
 			out.Note = string(raw)
 		}

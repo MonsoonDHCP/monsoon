@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net"
 	"strings"
 	"sync"
@@ -838,9 +839,17 @@ func splitScope(start, end uint32) (lowerStart, lowerEnd, upperStart, upperEnd u
 		return 0, 0, 1, 0
 	}
 	span := uint64(end-start) + 1
-	lowerCount := uint32((span + 1) / 2)
+	lowerCount := (span + 1) / 2
 	lowerStart = start
-	lowerEnd = start + lowerCount - 1
+	lowerEnd64 := uint64(start) + lowerCount - 1
+	if lowerEnd64 >= uint64(end) {
+		lowerEnd = end
+		return lowerStart, lowerEnd, 1, 0
+	}
+	if lowerEnd64 > math.MaxUint32 {
+		return lowerStart, end, 1, 0
+	}
+	lowerEnd = uint32(lowerEnd64)
 	if lowerEnd >= end {
 		return lowerStart, lowerEnd, 1, 0
 	}

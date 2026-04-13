@@ -96,6 +96,7 @@ func (r *Runner) importISCDHCPConfig(ctx context.Context, path string, dryRun bo
 		Path: path,
 	}
 
+	// #nosec G304 -- migration config path is explicitly provided by operator.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		report.Errors = append(report.Errors, RowError{Row: 0, Message: err.Error()})
@@ -716,6 +717,7 @@ func mergeISCRanges(ranges []iscRange) (string, string, []string, error) {
 }
 
 func parseISCDHCPLeases(path string, subnets []iscSubnet) ([]iscLeaseRecord, error) {
+	// #nosec G304 -- migration lease path is explicitly provided by operator.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

@@ -252,9 +252,10 @@ func (h *Handler) leaseOptions(msgType byte, alloc AllocationResult) Options {
 	opts := Options{}
 	opts.SetMessageType(msgType)
 	opts.SetIPv4(OptionServerIdentifier, h.serverIP)
-	opts.SetDurationSeconds(OptionIPAddressLeaseTime, uint32(alloc.LeaseDuration/time.Second))
-	opts.SetDurationSeconds(OptionRenewalTimeValue, uint32(alloc.LeaseDuration/time.Second/2))
-	opts.SetDurationSeconds(OptionRebindingTimeValue, uint32(alloc.LeaseDuration/time.Second*7/8))
+	leaseSec := durationToUint32Seconds(alloc.LeaseDuration)
+	opts.SetDurationSeconds(OptionIPAddressLeaseTime, leaseSec)
+	opts.SetDurationSeconds(OptionRenewalTimeValue, leaseSec/2)
+	opts.SetDurationSeconds(OptionRebindingTimeValue, leaseSec-leaseSec/8)
 	mask := net.CIDRMask(alloc.Prefix.Bits(), 32)
 	opts[OptionSubnetMask] = append([]byte(nil), mask...)
 	if alloc.Gateway != nil {
@@ -269,4 +270,20 @@ func (h *Handler) leaseOptions(msgType byte, alloc AllocationResult) Options {
 func isZeroIPv4(ip net.IP) bool {
 	ip = ip.To4()
 	return ip == nil || (ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] == 0)
+}
+
+func durationToUint32Seconds(value time.Duration) uint32 {
+	if value <= 0 {
+		return 0
+	}
+	seconds := value / time.Second
+	if seconds <= 0 {
+		return 1
+	}
+	max := time.Duration(^uint32(0))
+	if seconds > max {
+		return ^uint32(0)
+	}
+	// #nosec G115 -- bounded to uint32 range above.
+	return uint32(seconds)
 }

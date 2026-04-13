@@ -24,6 +24,7 @@ type syncMessage struct {
 
 func writeSyncMessage(conn net.Conn, msg syncMessage) error {
 	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	// #nosec G117 -- secret is intentionally serialized for authenticated HA sync traffic.
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		return err

@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/netip"
@@ -395,16 +396,32 @@ func parsePHPIPAMIPv4(value any) (netip.Addr, error) {
 		if err != nil {
 			return netip.Addr{}, err
 		}
+		if parsed > math.MaxUint32 {
+			return netip.Addr{}, fmt.Errorf("ipv4 numeric value out of range")
+		}
+		// #nosec G115 -- parsed is bounded to uint32 range above.
 		return uint32ToAddr(uint32(parsed)), nil
 	case float64:
+		if typed < 0 || typed > float64(math.MaxUint32) || math.Trunc(typed) != typed {
+			return netip.Addr{}, fmt.Errorf("ipv4 numeric value out of range")
+		}
+		// #nosec G115 -- typed is range-checked and integral above.
 		return uint32ToAddr(uint32(typed)), nil
 	case int:
+		if typed < 0 || uint64(typed) > math.MaxUint32 {
+			return netip.Addr{}, fmt.Errorf("ipv4 numeric value out of range")
+		}
+		// #nosec G115 -- typed is bounded to uint32 range above.
 		return uint32ToAddr(uint32(typed)), nil
 	case json.Number:
 		parsed, err := typed.Int64()
 		if err != nil {
 			return netip.Addr{}, err
 		}
+		if parsed < 0 || parsed > math.MaxUint32 {
+			return netip.Addr{}, fmt.Errorf("ipv4 numeric value out of range")
+		}
+		// #nosec G115 -- parsed is bounded to uint32 range above.
 		return uint32ToAddr(uint32(parsed)), nil
 	default:
 		return netip.Addr{}, fmt.Errorf("unsupported ipv4 value type %T", value)

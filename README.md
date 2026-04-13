@@ -2,6 +2,11 @@
 
 > **Every Address. Accounted For.**
 
+<p align="center">
+  <img src="assets/banner.jpeg" alt="Monsoon Banner" width="100%">
+</p>
+
+
 Monsoon is an open-source network platform that unifies a **DHCP server** and **IP Address Management (IPAM)** in a single Go binary. It aims to replace the ISC DHCP + Kea + phpIPAM + NetBox IPAM stack with one process and zero external dependencies.
 
 | | |

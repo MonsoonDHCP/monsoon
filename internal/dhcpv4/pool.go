@@ -2,6 +2,7 @@ package dhcpv4
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"net/netip"
@@ -319,5 +320,7 @@ func ipv4ToUint32(ip [4]byte) uint32 {
 }
 
 func uint32ToIPv4(v uint32) net.IP {
-	return net.IPv4(byte(v>>24), byte(v>>16), byte(v>>8), byte(v)).To4()
+	var out [4]byte
+	binary.BigEndian.PutUint32(out[:], v)
+	return net.IPv4(out[0], out[1], out[2], out[3]).To4()
 }

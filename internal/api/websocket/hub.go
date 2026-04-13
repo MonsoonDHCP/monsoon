@@ -14,8 +14,9 @@ import (
 type Hub struct {
 	broker *events.Broker
 
-	mu      sync.RWMutex
-	clients map[*Client]struct{}
+	startOnce sync.Once
+	mu        sync.RWMutex
+	clients   map[*Client]struct{}
 }
 
 func NewHub(broker *events.Broker) *Hub {
@@ -29,25 +30,27 @@ func (h *Hub) Start(ctx context.Context) {
 	if h == nil || h.broker == nil {
 		return
 	}
-	_, ch, unsubscribe := h.broker.Subscribe()
-	go func() {
-		defer unsubscribe()
-		for {
-			select {
-			case <-ctx.Done():
-				h.closeAll()
-				return
-			case evt, ok := <-ch:
-				if !ok {
+	h.startOnce.Do(func() {
+		_, ch, unsubscribe := h.broker.Subscribe()
+		go func() {
+			defer unsubscribe()
+			for {
+				select {
+				case <-ctx.Done():
 					h.closeAll()
 					return
-				}
-				for _, item := range NormalizeEvent(evt) {
-					h.Broadcast(item)
+				case evt, ok := <-ch:
+					if !ok {
+						h.closeAll()
+						return
+					}
+					for _, item := range NormalizeEvent(evt) {
+						h.Broadcast(item)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	})
 }
 
 func (h *Hub) Handler() http.Handler {

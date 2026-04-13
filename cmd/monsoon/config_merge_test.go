@@ -64,3 +64,18 @@ func TestMergeConfigPayloadReplacesNestedValues(t *testing.T) {
 		t.Fatalf("unexpected cors origins: %#v", next.API.REST.CORSOrigins)
 	}
 }
+
+func TestMergeConfigPayloadRejectsUnknownFields(t *testing.T) {
+	current := config.DefaultConfig()
+
+	_, err := mergeConfigPayload(current, map[string]any{
+		"api": map[string]any{
+			"rest": map[string]any{
+				"non_existing_field": true,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected merge config payload to reject unknown fields")
+	}
+}

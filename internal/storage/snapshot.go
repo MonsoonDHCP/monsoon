@@ -12,10 +12,11 @@ import (
 var snapshotMagic = [8]byte{'M', 'O', 'N', 'S', 'N', 'A', 'P', '1'}
 
 func WriteSnapshot(path string, trees map[string]*BTree) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	// #nosec G304 -- path is controlled by internal storage engine configuration.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -25,29 +26,49 @@ func WriteSnapshot(path string, trees map[string]*BTree) error {
 	if _, err := w.Write(snapshotMagic[:]); err != nil {
 		return err
 	}
-	if err := binary.Write(w, binary.BigEndian, uint32(len(trees))); err != nil {
+	treeCount, err := safeUint32FromInt(len(trees), "snapshot tree count")
+	if err != nil {
+		return err
+	}
+	if err := binary.Write(w, binary.BigEndian, treeCount); err != nil {
 		return err
 	}
 
 	for name, tree := range trees {
 		rows := tree.Snapshot()
-		if err := binary.Write(w, binary.BigEndian, uint16(len(name))); err != nil {
+		nameLen, err := safeUint16FromInt(len(name), "snapshot tree name length")
+		if err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, nameLen); err != nil {
 			return err
 		}
 		if _, err := w.WriteString(name); err != nil {
 			return err
 		}
-		if err := binary.Write(w, binary.BigEndian, uint32(len(rows))); err != nil {
+		rowCount, err := safeUint32FromInt(len(rows), "snapshot row count")
+		if err != nil {
+			return err
+		}
+		if err := binary.Write(w, binary.BigEndian, rowCount); err != nil {
 			return err
 		}
 		for _, row := range rows {
-			if err := binary.Write(w, binary.BigEndian, uint32(len(row[0]))); err != nil {
+			keyLen, err := safeUint32FromInt(len(row[0]), "snapshot key length")
+			if err != nil {
+				return err
+			}
+			if err := binary.Write(w, binary.BigEndian, keyLen); err != nil {
 				return err
 			}
 			if _, err := w.Write(row[0]); err != nil {
 				return err
 			}
-			if err := binary.Write(w, binary.BigEndian, uint32(len(row[1]))); err != nil {
+			valueLen, err := safeUint32FromInt(len(row[1]), "snapshot value length")
+			if err != nil {
+				return err
+			}
+			if err := binary.Write(w, binary.BigEndian, valueLen); err != nil {
 				return err
 			}
 			if _, err := w.Write(row[1]); err != nil {
@@ -63,6 +84,7 @@ func WriteSnapshot(path string, trees map[string]*BTree) error {
 }
 
 func ReadSnapshot(path string) (map[string]*BTree, error) {
+	// #nosec G304 -- path is controlled by internal storage engine configuration.
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err

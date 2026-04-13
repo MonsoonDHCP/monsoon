@@ -25,7 +25,7 @@ type Engine struct {
 }
 
 func OpenEngine(dataDir string, treeNames []string) (*Engine, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, err
 	}
 

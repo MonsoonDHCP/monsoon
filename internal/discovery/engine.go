@@ -44,7 +44,9 @@ type Engine struct {
 	interval   time.Duration
 	options    Options
 
+	startOnce   sync.Once
 	mu          sync.RWMutex
+	scanCtx     context.Context
 	scanning    bool
 	lastScanAt  time.Time
 	nextScanAt  time.Time
@@ -113,24 +115,32 @@ func NewEngineWithOptions(store *storage.Engine, leaseStore lease.Store, ipamEng
 }
 
 func (e *Engine) Start(ctx context.Context) {
-	e.mu.Lock()
-	if e.nextScanAt.IsZero() {
-		e.nextScanAt = time.Now().UTC().Add(e.interval)
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	e.mu.Unlock()
-
-	ticker := time.NewTicker(e.interval)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				_, _ = e.TriggerScan(context.Background(), ScanRequest{Reason: "scheduled"})
-			}
+	e.startOnce.Do(func() {
+		e.mu.Lock()
+		if ctx != nil {
+			e.scanCtx = ctx
 		}
-	}()
+		if e.nextScanAt.IsZero() {
+			e.nextScanAt = time.Now().UTC().Add(e.interval)
+		}
+		e.mu.Unlock()
+
+		ticker := time.NewTicker(e.interval)
+		go func() {
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					_, _ = e.TriggerScan(ctx, ScanRequest{Reason: "scheduled"})
+				}
+			}
+		}()
+	})
 }
 
 func (e *Engine) Status(_ context.Context) Status {
@@ -164,7 +174,7 @@ func (e *Engine) SetOnComplete(fn func(ScanResult)) {
 	e.onComplete = fn
 }
 
-func (e *Engine) TriggerScan(_ context.Context, request ScanRequest) (string, error) {
+func (e *Engine) TriggerScan(ctx context.Context, request ScanRequest) (string, error) {
 	e.mu.Lock()
 	if e.scanning {
 		e.mu.Unlock()
@@ -188,11 +198,15 @@ func (e *Engine) TriggerScan(_ context.Context, request ScanRequest) (string, er
 		p.ScanID = scanID
 		p.Phase = "collecting"
 	})
-	go e.runScan(scanID, request)
+	// #nosec G118 -- scans intentionally run on engine lifecycle context, not request-scoped context.
+	go e.runScan(e.resolveScanContext(ctx), scanID, request)
 	return scanID, nil
 }
 
-func (e *Engine) runScan(scanID string, request ScanRequest) {
+func (e *Engine) runScan(ctx context.Context, scanID string, request ScanRequest) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	started := time.Now().UTC()
 	defer e.markScanDone()
 
@@ -206,13 +220,13 @@ func (e *Engine) runScan(scanID string, request ScanRequest) {
 
 	leases := []lease.Lease{}
 	if e.leaseStore != nil {
-		leases, _ = e.leaseStore.ListAll(context.Background())
+		leases, _ = e.leaseStore.ListAll(ctx)
 	}
 	reservations := []ipam.Reservation{}
 	if e.ipamEngine != nil {
-		reservations, _ = e.ipamEngine.ListReservations(context.Background())
+		reservations, _ = e.ipamEngine.ListReservations(ctx)
 	}
-	subnets := e.resolveTargetSubnets(request.Subnets)
+	subnets := e.resolveTargetSubnets(ctx, request.Subnets)
 	previousHosts := filterObservedHostsForSubnets(e.loadPreviousHosts(), subnets)
 	if len(result.Subnets) == 0 && len(subnets) > 0 {
 		result.Subnets = make([]string, 0, len(subnets))
@@ -376,11 +390,14 @@ func (e *Engine) updateProgress(mut func(p *Progress)) {
 	e.progress.UpdatedAt = time.Now().UTC()
 }
 
-func (e *Engine) resolveTargetSubnets(explicit []string) []ipam.Subnet {
+func (e *Engine) resolveTargetSubnets(ctx context.Context, explicit []string) []ipam.Subnet {
 	if e.ipamEngine == nil {
 		return nil
 	}
-	subnets, err := e.ipamEngine.ListSubnets(context.Background())
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	subnets, err := e.ipamEngine.ListSubnets(ctx)
 	if err != nil {
 		return nil
 	}
@@ -773,6 +790,11 @@ func readARPNeighbors() map[string]string {
 }
 
 func pingHost(ip string, timeout time.Duration) bool {
+	parsed := net.ParseIP(strings.TrimSpace(ip))
+	if parsed == nil {
+		return false
+	}
+	target := parsed.String()
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
@@ -782,13 +804,15 @@ func pingHost(ip string, timeout time.Duration) bool {
 	}
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "ping", "-n", "1", "-w", strconv.FormatInt(ms, 10), ip)
+		// #nosec G204 -- target is normalized via net.ParseIP above.
+		cmd = exec.CommandContext(ctx, "ping", "-n", "1", "-w", strconv.FormatInt(ms, 10), target)
 	} else {
 		sec := int(timeout.Seconds())
 		if sec < 1 {
 			sec = 1
 		}
-		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", strconv.Itoa(sec), ip)
+		// #nosec G204 -- target is normalized via net.ParseIP above.
+		cmd = exec.CommandContext(ctx, "ping", "-c", "1", "-W", strconv.Itoa(sec), target)
 	}
 	return cmd.Run() == nil
 }
@@ -1028,4 +1052,17 @@ func normalizeReason(reason string) string {
 		return "manual"
 	}
 	return reason
+}
+
+func (e *Engine) resolveScanContext(ctx context.Context) context.Context {
+	e.mu.RLock()
+	base := e.scanCtx
+	e.mu.RUnlock()
+	if base != nil {
+		return base
+	}
+	if ctx != nil {
+		return ctx
+	}
+	return context.Background()
 }

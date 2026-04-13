@@ -180,12 +180,12 @@ func (m *PoolManager) availableForClient(ctx context.Context, addr netip.Addr, c
 }
 
 func (m *PoolManager) resultFor(pool managedPool, addr netip.Addr, iaid uint32) AllocationResult {
-	leaseDurSec := uint32(pool.leaseDur / time.Second)
+	leaseDurSec := durationToUint32Seconds(pool.leaseDur)
 	if leaseDurSec == 0 {
-		leaseDurSec = uint32((m.defaultLease) / time.Second)
+		leaseDurSec = durationToUint32Seconds(m.defaultLease)
 	}
 	if leaseDurSec == 0 {
-		leaseDurSec = uint32((12 * time.Hour) / time.Second)
+		leaseDurSec = durationToUint32Seconds(12 * time.Hour)
 	}
 	preferred := leaseDurSec / 2
 	if preferred == 0 {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/binary"
+	"math"
 	"net"
 	"strings"
 	"testing"
@@ -187,4 +188,33 @@ func skipRR(msg []byte, offset int) (int, error) {
 		return 0, context.DeadlineExceeded
 	}
 	return offset + rdLength, nil
+}
+
+func TestBuildUpdatesRejectsOverlongHostnameLabels(t *testing.T) {
+	client, err := NewClient(Config{
+		ServerAddr:  "127.0.0.1:53",
+		ForwardZone: "lab.example",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	host := strings.Repeat("a", 64)
+	_, err = client.buildUpdates(ActionUpsert, lease.Lease{
+		IP:       "192.168.1.20",
+		Hostname: host,
+		Duration: time.Minute,
+	})
+	if err == nil {
+		t.Fatal("expected buildUpdates to reject overlong DNS labels")
+	}
+}
+
+func TestDefaultTTLLeaseGuardsNegativeAndLargeDurations(t *testing.T) {
+	if got := defaultTTLLease(-time.Second); got != 300 {
+		t.Fatalf("defaultTTLLease(-1s)=%d, want 300", got)
+	}
+	huge := (time.Duration(math.MaxUint32) + 10) * time.Second
+	if got := defaultTTLLease(huge); got != math.MaxUint32 {
+		t.Fatalf("defaultTTLLease(huge)=%d, want %d", got, uint32(math.MaxUint32))
+	}
 }

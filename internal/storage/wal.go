@@ -28,7 +28,7 @@ type WAL struct {
 }
 
 func OpenWAL(dir string) (*WAL, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create wal dir: %w", err)
 	}
 
@@ -73,7 +73,8 @@ func (w *WAL) openLatest() error {
 
 func (w *WAL) openSegment(id int) error {
 	path := filepath.Join(w.dir, fmt.Sprintf("%09d.wal", id))
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
+	// #nosec G304 -- path is derived from internal WAL directory and segment id.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open wal segment: %w", err)
 	}
@@ -100,19 +101,20 @@ func (w *WAL) Append(op OpType, key []byte, value []byte) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	payloadLen := 1 + 2 + len(key) + 4 + len(value)
+	payload, err := w.marshalPayload(op, key, value)
+	if err != nil {
+		return err
+	}
+	payloadLen := len(payload)
+	payloadLenU32, err := safeUint32FromInt(payloadLen, "wal payload length")
+	if err != nil {
+		return err
+	}
 	buf := make([]byte, 4+4+payloadLen)
-	binary.BigEndian.PutUint32(buf[0:4], uint32(payloadLen))
-	crc := crc32.ChecksumIEEE(w.marshalPayload(op, key, value))
+	binary.BigEndian.PutUint32(buf[0:4], payloadLenU32)
+	crc := crc32.ChecksumIEEE(payload)
 	binary.BigEndian.PutUint32(buf[4:8], crc)
-
-	payload := buf[8:]
-	payload[0] = byte(op)
-	binary.BigEndian.PutUint16(payload[1:3], uint16(len(key)))
-	copy(payload[3:3+len(key)], key)
-	vLenPos := 3 + len(key)
-	binary.BigEndian.PutUint32(payload[vLenPos:vLenPos+4], uint32(len(value)))
-	copy(payload[vLenPos+4:], value)
+	copy(buf[8:], payload)
 
 	if err := w.rotateIfNeeded(int64(len(buf))); err != nil {
 		return err
@@ -129,15 +131,23 @@ func (w *WAL) Append(op OpType, key []byte, value []byte) error {
 	return nil
 }
 
-func (w *WAL) marshalPayload(op OpType, key []byte, value []byte) []byte {
+func (w *WAL) marshalPayload(op OpType, key []byte, value []byte) ([]byte, error) {
+	keyLen, err := safeUint16FromInt(len(key), "wal key length")
+	if err != nil {
+		return nil, err
+	}
+	valueLen, err := safeUint32FromInt(len(value), "wal value length")
+	if err != nil {
+		return nil, err
+	}
 	payload := make([]byte, 1+2+len(key)+4+len(value))
 	payload[0] = byte(op)
-	binary.BigEndian.PutUint16(payload[1:3], uint16(len(key)))
+	binary.BigEndian.PutUint16(payload[1:3], keyLen)
 	copy(payload[3:3+len(key)], key)
 	vLenPos := 3 + len(key)
-	binary.BigEndian.PutUint32(payload[vLenPos:vLenPos+4], uint32(len(value)))
+	binary.BigEndian.PutUint32(payload[vLenPos:vLenPos+4], valueLen)
 	copy(payload[vLenPos+4:], value)
-	return payload
+	return payload, nil
 }
 
 func (w *WAL) Replay(apply func(op OpType, key []byte, value []byte) error) error {
@@ -185,6 +195,7 @@ func (w *WAL) segmentPaths() ([]string, error) {
 }
 
 func replayFile(path string, apply func(op OpType, key []byte, value []byte) error) error {
+	// #nosec G304 -- replay paths come from segmentPaths() rooted in WAL directory.
 	f, err := os.Open(path)
 	if err != nil {
 		return err

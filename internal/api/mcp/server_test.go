@@ -396,6 +396,7 @@ func postRPC(t *testing.T, endpoint string, req rpcRequest) rpcResponse {
 	if err != nil {
 		t.Fatalf("marshal rpc request: %v", err)
 	}
+	// #nosec G107 -- endpoint is from httptest server under test control.
 	resp, err := http.Post(endpoint, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post rpc: %v", err)

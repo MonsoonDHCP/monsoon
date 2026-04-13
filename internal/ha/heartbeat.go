@@ -32,6 +32,7 @@ func deriveListenAddr(peerAddr string) string {
 
 func writeWireMessage(conn net.Conn, msg heartbeatMessage) error {
 	_ = conn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	// #nosec G117 -- secret is intentionally serialized for authenticated HA heartbeats.
 	raw, err := json.Marshal(msg)
 	if err != nil {
 		return err

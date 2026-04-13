@@ -11,11 +11,12 @@ import (
 )
 
 type Dispatcher struct {
-	hooks    []config.WebhookConfig
-	broker   *events.Broker
-	delivery *Delivery
-	queue    chan deliveryRequest
-	wg       sync.WaitGroup
+	hooks     []config.WebhookConfig
+	broker    *events.Broker
+	delivery  *Delivery
+	queue     chan deliveryRequest
+	wg        sync.WaitGroup
+	startOnce sync.Once
 }
 
 type deliveryRequest struct {
@@ -40,52 +41,54 @@ func (d *Dispatcher) Start(ctx context.Context) {
 		return
 	}
 
-	_, ch, unsubscribe := d.broker.Subscribe()
+	d.startOnce.Do(func() {
+		_, ch, unsubscribe := d.broker.Subscribe()
 
-	d.wg.Add(2)
-	go func() {
-		defer d.wg.Done()
-		defer unsubscribe()
-		defer close(d.queue)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case evt, ok := <-ch:
-				if !ok {
+		d.wg.Add(2)
+		go func() {
+			defer d.wg.Done()
+			defer unsubscribe()
+			defer close(d.queue)
+			for {
+				select {
+				case <-ctx.Done():
 					return
-				}
-				for _, hook := range d.hooks {
-					if !matchesAny(hook.Events, evt.Type) {
-						continue
-					}
-					select {
-					case d.queue <- deliveryRequest{hook: hook, event: evt}:
-					case <-ctx.Done():
+				case evt, ok := <-ch:
+					if !ok {
 						return
 					}
+					for _, hook := range d.hooks {
+						if !matchesAny(hook.Events, evt.Type) {
+							continue
+						}
+						select {
+						case d.queue <- deliveryRequest{hook: hook, event: evt}:
+						case <-ctx.Done():
+							return
+						}
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	go func() {
-		defer d.wg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case item, ok := <-d.queue:
-				if !ok {
+		go func() {
+			defer d.wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
 					return
-				}
-				status := d.delivery.Send(ctx, normalizeHook(item.hook), item.event)
-				if !status.Success {
-					log.Printf("webhook delivery failed: hook=%s event=%s attempts=%d status=%d error=%s", status.Webhook, status.EventType, status.Attempts, status.StatusCode, status.Error)
+				case item, ok := <-d.queue:
+					if !ok {
+						return
+					}
+					status := d.delivery.Send(ctx, normalizeHook(item.hook), item.event)
+					if !status.Success {
+						log.Printf("webhook delivery failed: hook=%s event=%s attempts=%d status=%d error=%s", status.Webhook, status.EventType, status.Attempts, status.StatusCode, status.Error)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	})
 }
 
 func (d *Dispatcher) Wait() {

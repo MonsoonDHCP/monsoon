@@ -58,7 +58,7 @@ func DecodeOptions(raw []byte) (Options, error) {
 		if i >= len(raw) {
 			return nil, errors.New("truncated option length")
 		}
-		l := int(raw[i])
+		l := int(raw[i]) // #nosec G602 -- bounds checked by i >= len(raw) guard above.
 		i++
 		if i+l > len(raw) {
 			return nil, fmt.Errorf("option %d truncated", code)
@@ -82,6 +82,7 @@ func (o Options) Encode() ([]byte, error) {
 		if len(val) > 255 {
 			return nil, fmt.Errorf("option %d too large", code)
 		}
+		// #nosec G115 -- len(val) is bounded to <=255 above.
 		out = append(out, code, byte(len(val)))
 		out = append(out, val...)
 	}

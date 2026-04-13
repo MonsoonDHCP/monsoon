@@ -2,10 +2,11 @@ package ddns
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
@@ -87,6 +88,14 @@ func (c *Client) buildUpdates(action Action, item lease.Lease) ([]zoneUpdate, er
 	if fqdn == "" {
 		return nil, nil
 	}
+	if err := validateDNSName(fqdn); err != nil {
+		return nil, err
+	}
+	if c.forwardZone != "" {
+		if err := validateDNSName(c.forwardZone); err != nil {
+			return nil, err
+		}
+	}
 
 	var updates []zoneUpdate
 	if c.forwardZone != "" {
@@ -113,6 +122,15 @@ func (c *Client) buildUpdates(action Action, item lease.Lease) ([]zoneUpdate, er
 	ptrName, ptrZone := reverseNames(ip, c.reverseZone)
 	if ptrName != "" && ptrZone != "" {
 		ptrTarget := ensureFQDN(fqdn)
+		if err := validateDNSName(ptrName); err != nil {
+			return nil, err
+		}
+		if err := validateDNSName(ptrZone); err != nil {
+			return nil, err
+		}
+		if err := validateDNSName(ptrTarget); err != nil {
+			return nil, err
+		}
 		switch action {
 		case ActionUpsert:
 			updates = append(updates, zoneUpdate{
@@ -138,8 +156,14 @@ func (c *Client) sendUpdate(ctx context.Context, update zoneUpdate) error {
 	if strings.TrimSpace(update.zone) == "" || len(update.records) == 0 {
 		return nil
 	}
+	if err := validateZoneUpdate(update); err != nil {
+		return err
+	}
 	now := time.Now().UTC()
-	msgID := uint16(rand.New(rand.NewSource(now.UnixNano())).Uint32())
+	msgID, err := nextMessageID()
+	if err != nil {
+		return fmt.Errorf("generate dns message id: %w", err)
+	}
 	wire, err := c.buildMessage(msgID, update, now)
 	if err != nil {
 		return err
@@ -169,11 +193,15 @@ func (c *Client) sendUpdate(ctx context.Context, update zoneUpdate) error {
 }
 
 func (c *Client) buildMessage(msgID uint16, update zoneUpdate, now time.Time) ([]byte, error) {
+	if len(update.records) > math.MaxUint16 {
+		return nil, fmt.Errorf("too many dns update records: %d", len(update.records))
+	}
 	base := make([]byte, 12)
 	binary.BigEndian.PutUint16(base[0:2], msgID)
 	binary.BigEndian.PutUint16(base[2:4], uint16(opcodeUpdate<<11))
 	binary.BigEndian.PutUint16(base[4:6], 1)
 	binary.BigEndian.PutUint16(base[6:8], 0)
+	// #nosec G115 -- validated above: len(update.records) <= math.MaxUint16.
 	binary.BigEndian.PutUint16(base[8:10], uint16(len(update.records)))
 	binary.BigEndian.PutUint16(base[10:12], 0)
 
@@ -182,7 +210,11 @@ func (c *Client) buildMessage(msgID uint16, update zoneUpdate, now time.Time) ([
 	body = appendUint16(body, typeSOA)
 	body = appendUint16(body, classINET)
 	for _, record := range update.records {
-		body = append(body, encodeRR(record)...)
+		encoded, err := encodeRR(record)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, encoded...)
 	}
 	if c.signer == nil {
 		return body, nil
@@ -212,15 +244,19 @@ func validateResponse(msg []byte, id uint16) error {
 	return nil
 }
 
-func encodeRR(record rr) []byte {
+func encodeRR(record rr) ([]byte, error) {
+	if len(record.rdata) > math.MaxUint16 {
+		return nil, fmt.Errorf("record rdata too long for %s", record.name)
+	}
 	out := make([]byte, 0, 256)
 	out = append(out, encodeName(record.name)...)
 	out = appendUint16(out, record.typ)
 	out = appendUint16(out, record.class)
 	out = appendUint32(out, record.ttl)
+	// #nosec G115 -- validated above: len(record.rdata) <= math.MaxUint16.
 	out = appendUint16(out, uint16(len(record.rdata)))
 	out = append(out, record.rdata...)
-	return out
+	return out, nil
 }
 
 func encodeName(name string) []byte {
@@ -231,6 +267,7 @@ func encodeName(name string) []byte {
 	trimmed := strings.TrimSuffix(name, ".")
 	var out []byte
 	for _, label := range strings.Split(trimmed, ".") {
+		// #nosec G115 -- label length is constrained by validateDNSName (<= 63).
 		out = append(out, byte(len(label)))
 		out = append(out, []byte(label)...)
 	}
@@ -273,11 +310,18 @@ func normalizeHostname(host string) string {
 }
 
 func defaultTTLLease(duration time.Duration) uint32 {
-	ttl := uint32(duration / time.Second)
-	if ttl == 0 {
+	if duration <= 0 {
 		return 300
 	}
-	return ttl
+	ttlSeconds := duration / time.Second
+	if ttlSeconds == 0 {
+		return 300
+	}
+	if ttlSeconds > time.Duration(math.MaxUint32) {
+		return math.MaxUint32
+	}
+	// #nosec G115 -- ttlSeconds is bounded to uint32 range above.
+	return uint32(ttlSeconds)
 }
 
 func (c *Client) forwardName(host string) string {
@@ -359,4 +403,50 @@ func reverseIPv6Name(addr netip.Addr) string {
 		labels = append(labels, fmt.Sprintf("%x", ip[i]>>4))
 	}
 	return strings.Join(labels, ".") + ".ip6.arpa"
+}
+
+func nextMessageID() (uint16, error) {
+	var id [2]byte
+	if _, err := crand.Read(id[:]); err != nil {
+		return 0, err
+	}
+	return binary.BigEndian.Uint16(id[:]), nil
+}
+
+func validateZoneUpdate(update zoneUpdate) error {
+	if err := validateDNSName(update.zone); err != nil {
+		return fmt.Errorf("invalid update zone %q: %w", update.zone, err)
+	}
+	for _, record := range update.records {
+		if err := validateDNSName(record.name); err != nil {
+			return fmt.Errorf("invalid record name %q: %w", record.name, err)
+		}
+	}
+	return nil
+}
+
+func validateDNSName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("dns name is empty")
+	}
+	if name == "@" {
+		return nil
+	}
+	trimmed := strings.TrimSuffix(ensureFQDN(name), ".")
+	if len(trimmed) == 0 {
+		return nil
+	}
+	if len(trimmed) > 253 {
+		return fmt.Errorf("dns name length %d exceeds max 253", len(trimmed))
+	}
+	for _, label := range strings.Split(trimmed, ".") {
+		if len(label) == 0 {
+			return errors.New("dns name contains empty label")
+		}
+		if len(label) > 63 {
+			return fmt.Errorf("dns label %q length %d exceeds max 63", label, len(label))
+		}
+	}
+	return nil
 }

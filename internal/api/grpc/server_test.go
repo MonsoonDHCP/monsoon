@@ -335,7 +335,11 @@ func (s *testStack) close(t *testing.T) {
 
 func (s *testStack) invokeUnary(t *testing.T, path string, req protoMarshaler) ([]byte, http.Header, int) {
 	t.Helper()
-	httpReq, err := http.NewRequest(http.MethodPost, s.baseURL+path, bytes.NewReader(encodeGRPCFrame(req.marshalProto())))
+	frame, err := encodeGRPCFrame(req.marshalProto())
+	if err != nil {
+		t.Fatalf("encodeGRPCFrame: %v", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, s.baseURL+path, bytes.NewReader(frame))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -361,7 +365,11 @@ func (s *testStack) invokeUnary(t *testing.T, path string, req protoMarshaler) (
 
 func (s *testStack) openStream(t *testing.T, path string, req protoMarshaler) *http.Response {
 	t.Helper()
-	httpReq, err := http.NewRequest(http.MethodPost, s.baseURL+path, bytes.NewReader(encodeGRPCFrame(req.marshalProto())))
+	frame, err := encodeGRPCFrame(req.marshalProto())
+	if err != nil {
+		t.Fatalf("encodeGRPCFrame: %v", err)
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, s.baseURL+path, bytes.NewReader(frame))
 	if err != nil {
 		t.Fatalf("new stream request: %v", err)
 	}

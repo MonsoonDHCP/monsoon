@@ -14,7 +14,8 @@ import (
 )
 
 const (
-	treeTokens       = "api_tokens"
+	treeTokens = "api_tokens"
+	// #nosec G101 -- bucket/tree identifier, not a credential.
 	treeTokensByHash = "api_tokens_by_hash"
 )
 

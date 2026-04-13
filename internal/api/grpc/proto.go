@@ -15,7 +15,12 @@ type protoMarshaler interface {
 }
 
 func appendTag(dst []byte, field int, wireType int) []byte {
-	return binary.AppendUvarint(dst, uint64(field<<3|wireType))
+	if field <= 0 || wireType < 0 || wireType > 7 || field > int(^uint32(0)) {
+		return dst
+	}
+	// #nosec G115 -- protobuf field and wire type are range-validated above.
+	tag := (uint64(uint32(field)) << 3) | uint64(uint32(wireType))
+	return binary.AppendUvarint(dst, tag)
 }
 
 func appendBool(dst []byte, field int, value bool) []byte {
@@ -78,7 +83,11 @@ func readProtoFields(data []byte, fn func(field int, wireType int, raw []byte, v
 		}
 		data = data[n:]
 
-		field := int(tag >> 3)
+		field, ok := protoUint64ToInt(tag >> 3)
+		if !ok {
+			return fmt.Errorf("protobuf field number out of range")
+		}
+		// #nosec G115 -- masked to 3 bits (0-7).
 		wireType := int(tag & 0x7)
 		switch wireType {
 		case wireVarint:
@@ -113,4 +122,12 @@ func readProtoFields(data []byte, fn func(field int, wireType int, raw []byte, v
 
 func parseBool(value uint64) bool {
 	return value != 0
+}
+
+func protoUint64ToInt(value uint64) (int, bool) {
+	if value > uint64(^uint(0)>>1) {
+		return 0, false
+	}
+	// #nosec G115 -- bounded to platform int max above.
+	return int(value), true
 }

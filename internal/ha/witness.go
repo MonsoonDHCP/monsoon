@@ -21,6 +21,7 @@ func readWitnessRecord(path string) (witnessRecord, error) {
 	if path == "" {
 		return witnessRecord{}, errors.New("witness path is empty")
 	}
+	// #nosec G304 -- witness path comes from trusted HA configuration.
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return witnessRecord{}, err
@@ -39,7 +40,7 @@ func writeWitnessRecord(path string, rec witnessRecord) error {
 		return errors.New("witness path is empty")
 	}
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	raw, err := json.Marshal(rec)
@@ -97,11 +98,25 @@ func atomicWriteFile(path string, raw []byte, perm os.FileMode) error {
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-			return fmt.Errorf("replace witness file: %w", err)
+		backupPath := path + ".bak"
+		_ = os.Remove(backupPath)
+		movedCurrent := false
+		if _, statErr := os.Stat(path); statErr == nil {
+			if moveErr := os.Rename(path, backupPath); moveErr != nil {
+				return fmt.Errorf("replace witness file: %w", moveErr)
+			}
+			movedCurrent = true
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("replace witness file: %w", statErr)
 		}
 		if retryErr := os.Rename(tmpPath, path); retryErr != nil {
+			if movedCurrent {
+				_ = os.Rename(backupPath, path)
+			}
 			return retryErr
+		}
+		if movedCurrent {
+			_ = os.Remove(backupPath)
 		}
 	}
 	cleanup = false

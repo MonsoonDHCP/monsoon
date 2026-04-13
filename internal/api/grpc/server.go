@@ -146,7 +146,11 @@ type serverStream struct {
 }
 
 func (s *serverStream) Send(msg protoMarshaler) error {
-	if _, err := s.w.Write(encodeGRPCFrame(msg.marshalProto())); err != nil {
+	frame, err := encodeGRPCFrame(msg.marshalProto())
+	if err != nil {
+		return err
+	}
+	if _, err := s.w.Write(frame); err != nil {
 		return err
 	}
 	if s.flusher != nil {
@@ -186,12 +190,16 @@ func statusFromError(err error) (int, string) {
 	}
 }
 
-func encodeGRPCFrame(payload []byte) []byte {
+func encodeGRPCFrame(payload []byte) ([]byte, error) {
+	payloadLen, err := lenToUint32(len(payload), "grpc payload")
+	if err != nil {
+		return nil, err
+	}
 	frame := make([]byte, 5+len(payload))
 	frame[0] = 0
-	binary.BigEndian.PutUint32(frame[1:5], uint32(len(payload)))
+	binary.BigEndian.PutUint32(frame[1:5], payloadLen)
 	copy(frame[5:], payload)
-	return frame
+	return frame, nil
 }
 
 func decodeGRPCFrame(data []byte) ([]byte, error) {
@@ -202,7 +210,11 @@ func decodeGRPCFrame(data []byte) ([]byte, error) {
 		return nil, fmt.Errorf("compressed grpc frames are not supported")
 	}
 	length := binary.BigEndian.Uint32(data[1:5])
-	if int(length) != len(data[5:]) {
+	if len(data[5:]) > int(^uint32(0)) {
+		return nil, fmt.Errorf("grpc frame payload too large")
+	}
+	// #nosec G115 -- payload length is bounded to uint32 above.
+	if uint32(len(data[5:])) != length {
 		return nil, fmt.Errorf("grpc frame length mismatch")
 	}
 	return data[5:], nil
@@ -271,12 +283,26 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := method.unary(r.Context(), req)
 	code, message := statusFromError(err)
 	if err == nil && resp != nil {
-		_, _ = w.Write(encodeGRPCFrame(resp.marshalProto()))
+		frame, frameErr := encodeGRPCFrame(resp.marshalProto())
+		if frameErr != nil {
+			code = codeInternal
+			message = frameErr.Error()
+		} else {
+			_, _ = w.Write(frame)
+		}
 	}
 	w.Header().Set("Grpc-Status", strconv.Itoa(code))
 	if message != "" {
 		w.Header().Set("Grpc-Message", message)
 	}
+}
+
+func lenToUint32(value int, field string) (uint32, error) {
+	if value < 0 || uint64(value) > uint64(^uint32(0)) {
+		return 0, fmt.Errorf("%s too large", field)
+	}
+	// #nosec G115 -- bounded to uint32 range above.
+	return uint32(value), nil
 }
 
 func (h *Handler) writeGRPCStatus(w http.ResponseWriter, code int, message string) {

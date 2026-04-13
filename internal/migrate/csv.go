@@ -244,6 +244,7 @@ func (r *Runner) importLeaseRow(ctx context.Context, row csvRow, dryRun bool, co
 }
 
 func readCSVRows(path string) ([]csvRow, error) {
+	// #nosec G304 -- migration source path is explicitly provided by operator.
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err

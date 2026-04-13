@@ -143,6 +143,7 @@ func registerAuthRoutes(mux *http.ServeMux, service *auth.Service, secureCookie 
 			service.RevokeSession(r.Context(), cookie.Value)
 		}
 		recordAuthRequestMetric(registry, "logout", "success")
+		// #nosec G124 -- Secure is intentionally environment-configurable for HTTP dev mode.
 		http.SetCookie(w, &http.Cookie{
 			Name:     service.CookieName(),
 			Value:    "",
@@ -343,6 +344,7 @@ func authSecureCookie(value func() bool) bool {
 }
 
 func setSessionCookie(w http.ResponseWriter, name, sessionID string, expiresAt time.Time, secureCookie bool) {
+	// #nosec G124 -- Secure is intentionally environment-configurable for HTTP dev mode.
 	http.SetCookie(w, &http.Cookie{
 		Name:     name,
 		Value:    sessionID,

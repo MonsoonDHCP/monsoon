@@ -955,7 +955,7 @@ func smallestIPv4Prefix(requiredUsable int) int {
 }
 
 func usableHosts(prefix netip.Prefix) int {
-	count := int(ipam.AddressCount(prefix))
+	count := addressCountAsInt(prefix)
 	if count <= 2 {
 		return 0
 	}
@@ -963,12 +963,12 @@ func usableHosts(prefix netip.Prefix) int {
 }
 
 func defaultPlanAddresses(prefix netip.Prefix) (gateway string, poolStart string, poolEnd string) {
-	total := int(ipam.AddressCount(prefix))
+	total := addressCountAsInt(prefix)
 	if total < 4 {
 		return "", "", ""
 	}
 	gw, _ := ipam.NthAddress(prefix, 1)
-	lastUsable, _ := ipam.NthAddress(prefix, uint64(total-2))
+	lastUsable, _ := ipam.NthAddress(prefix, nonNegativeIntToUint64(total-2))
 	startOffset := uint64(10)
 	if usableHosts(prefix) <= 20 {
 		startOffset = 2
@@ -1005,6 +1005,23 @@ func hostSpan(start, end netip.Addr) int {
 
 func prefixAddressCount(bits int) uint64 {
 	return 1 << (32 - bits)
+}
+
+func addressCountAsInt(prefix netip.Prefix) int {
+	count := ipam.AddressCount(prefix)
+	if count > uint64(^uint(0)>>1) {
+		return int(^uint(0) >> 1)
+	}
+	// #nosec G115 -- bounded to platform int max above.
+	return int(count)
+}
+
+func nonNegativeIntToUint64(value int) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	// #nosec G115 -- caller guarantees non-negative values.
+	return uint64(value)
 }
 
 func compareIPString(a, b string) int {

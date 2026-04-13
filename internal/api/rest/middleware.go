@@ -3,6 +3,7 @@ package rest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -68,7 +69,15 @@ func RecoveryMiddleware() Middleware {
 			defer func() {
 				if rec := recover(); rec != nil {
 					requestID, _ := RequestIDFromContext(r.Context())
-					log.Printf("level=error msg=\"panic recovered\" request_id=%q method=%q path=%q remote_ip=%q panic=%q", requestID, r.Method, r.URL.Path, clientIP(r), rec)
+					// #nosec G706 -- all tainted fields are sanitized via sanitizeLogValue.
+					log.Printf(
+						"level=error msg=\"panic recovered\" request_id=%q method=%q path=%q remote_ip=%q panic=%q",
+						sanitizeLogValue(requestID),
+						sanitizeLogValue(r.Method),
+						sanitizeLogValue(r.URL.Path),
+						sanitizeLogValue(clientIP(r)),
+						sanitizeLogValue(fmt.Sprint(rec)),
+					)
 					WriteError(w, http.StatusInternalServerError, "internal_error", "internal server error")
 				}
 			}()
@@ -109,19 +118,20 @@ func LoggingMiddleware() Middleware {
 				authType = identity.AuthType
 			}
 
+			// #nosec G706 -- all tainted fields are sanitized via sanitizeLogValue.
 			log.Printf(
 				"level=info msg=\"http request\" request_id=%q method=%q path=%q status=%d bytes=%d dur_ms=%d remote_ip=%q user_agent=%q actor=%q auth_type=%q error_code=%q",
-				requestID,
-				r.Method,
-				r.URL.Path,
+				sanitizeLogValue(requestID),
+				sanitizeLogValue(r.Method),
+				sanitizeLogValue(r.URL.Path),
 				rec.status,
 				rec.bytes,
 				time.Since(start).Milliseconds(),
-				clientIP(r),
-				r.UserAgent(),
-				actor,
-				authType,
-				rec.errorCode,
+				sanitizeLogValue(clientIP(r)),
+				sanitizeLogValue(r.UserAgent()),
+				sanitizeLogValue(actor),
+				sanitizeLogValue(authType),
+				sanitizeLogValue(rec.errorCode),
 			)
 		})
 	}
@@ -132,6 +142,12 @@ type responseRecorder struct {
 	status    int
 	bytes     int
 	errorCode string
+}
+
+var logValueSanitizer = strings.NewReplacer("\r", "", "\n", "", "\t", " ")
+
+func sanitizeLogValue(value string) string {
+	return logValueSanitizer.Replace(value)
 }
 
 func (r *responseRecorder) WriteHeader(status int) {
